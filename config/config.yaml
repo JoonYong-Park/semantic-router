@@ -1,0 +1,254 @@
+# 이 파일은 https://github.com/vllm-project/semantic-router 의 실제 config.yaml
+# 스키마(providers / routing / global.model_catalog)를 기준으로 작성한, 데모 범위에
+# 맞춘 축소판입니다. 실제 프로젝트는 keyword/embedding/PII/jailbreak 등 훨씬 많은
+# 시그널을 지원하지만, 이 데모는 "도메인 분류 -> 3개 모델 라우팅" 흐름만 사용합니다.
+
+version: v0.3
+
+listeners:
+  - name: http-8801
+    address: 0.0.0.0
+    port: 8801
+
+providers:
+  defaults:
+    default_model: gpt-4
+
+  models:
+    - name: gpt-4
+      provider_model_id: gpt-4
+      api_format: openai
+      backend_refs:
+        - name: openai-primary
+          base_url: https://api.openai.com/v1
+          provider: openai
+          api_key_env: OPENAI_API_KEY
+          weight: 100
+
+    - name: gemini-2.5-pro
+      # 2026-08 기준 Pro 계열은 무료 티어 쿼터가 0이라 실제로는 Flash를 호출하도록 함
+      # (name은 내부 라우팅용 별칭이라 유지, 실제 API로 gemini-3.6-flash 성공 확인함)
+      provider_model_id: gemini-3.6-flash
+      # Gemini는 OpenAI 호환 엔드포인트(v1beta/openai)를 통해 openai 포맷으로 호출합니다.
+      # (vLLM Semantic Router 참조 설정에는 네이티브 gemini api_format 예시가 없어,
+      #  Gemini 공식 OpenAI-호환 레이어를 사용하는 방식으로 구성했습니다.)
+      api_format: openai
+      backend_refs:
+        - name: gemini-primary
+          base_url: https://generativelanguage.googleapis.com/v1beta/openai
+          provider: openai
+          api_key_env: GEMINI_API_KEY
+          weight: 100
+
+    - name: claude-opus
+      # 실제 /v1/models로 확인한 유효한 모델 ID
+      provider_model_id: claude-opus-5
+      api_format: anthropic
+      backend_refs:
+        - name: anthropic-primary
+          base_url: https://api.anthropic.com
+          provider: anthropic
+          api_key_env: ANTHROPIC_API_KEY
+          weight: 100
+
+routing:
+  strategy: priority
+
+  # providers.models[]에 등록한 모든 모델은 여기 modelCards에도 있어야 함
+  # (없으면 라우터가 "not found in routing.modelCards" 에러로 기동 실패함 - 실제로 확인함)
+  modelCards:
+    - name: gpt-4
+      context_window_size: 128000
+      description: OpenAI GPT-4 - 생명과학/의료/법률 도메인 처리
+      capabilities: [chat, reasoning]
+      modality: ar
+    - name: gemini-2.5-pro
+      context_window_size: 1000000
+      description: Google Gemini 2.5 Pro - 인문/사회/기타 도메인 처리
+      capabilities: [chat, reasoning]
+      modality: ar
+    - name: claude-opus
+      context_window_size: 200000
+      description: Anthropic Claude Opus - 추론/코딩 도메인 처리
+      capabilities: [chat, reasoning, tools]
+      modality: ar
+
+  # signals.domains는 "시그널 정의"일 뿐, 실제 라우팅은 decisions[]가 결정한다.
+  # (실제로 config.yaml에 decisions 없이 띄워보니 라우터가
+  #  "No decisions configured, using default model" 경고와 함께 항상
+  #  providers.defaults.default_model로만 라우팅하는 것을 확인함.)
+  decisions:
+    - name: route-to-claude
+      description: 추론/코딩에 강한 도메인 -> Claude
+      priority: 10
+      rules:
+        operator: OR
+        conditions:
+          - type: domain
+            name: "computer science"
+          - type: domain
+            name: math
+          - type: domain
+            name: engineering
+          - type: domain
+            name: physics
+      modelRefs:
+        - model: claude-opus
+      algorithm:
+        type: static
+
+    - name: route-to-gpt
+      description: 생명과학/의료/법률 도메인 -> GPT
+      priority: 9
+      rules:
+        operator: OR
+        conditions:
+          - type: domain
+            name: biology
+          - type: domain
+            name: chemistry
+          - type: domain
+            name: health
+          - type: domain
+            name: law
+      modelRefs:
+        - model: gpt-4
+      algorithm:
+        type: static
+
+    - name: route-to-gemini
+      description: 인문/사회/기타 도메인 -> Gemini
+      priority: 8
+      rules:
+        operator: OR
+        conditions:
+          - type: domain
+            name: business
+          - type: domain
+            name: economics
+          - type: domain
+            name: history
+          - type: domain
+            name: philosophy
+          - type: domain
+            name: psychology
+          - type: domain
+            name: other
+      modelRefs:
+        - model: gemini-2.5-pro
+      algorithm:
+        type: static
+
+    - name: default-fallback
+      description: 도메인 분류가 매치되지 않은 경우 -> Gemini로 폴백
+      priority: 0
+      rules:
+        operator: AND
+        conditions: []
+      modelRefs:
+        - model: gemini-2.5-pro
+      algorithm:
+        type: static
+
+  signals:
+    domains:
+      # --- Claude: 추론/코딩에 강한 카테고리 ---
+      - name: "computer science"
+        mmlu_categories: ["computer science"]
+        model_scores:
+          - model: claude-opus
+            score: 1.0
+      - name: math
+        mmlu_categories: [math]
+        model_scores:
+          - model: claude-opus
+            score: 1.0
+      - name: engineering
+        mmlu_categories: [engineering]
+        model_scores:
+          - model: claude-opus
+            score: 1.0
+      - name: physics
+        mmlu_categories: [physics]
+        model_scores:
+          - model: claude-opus
+            score: 1.0
+
+      # --- GPT: 생명과학/의료/법률 ---
+      - name: biology
+        mmlu_categories: [biology]
+        model_scores:
+          - model: gpt-4
+            score: 1.0
+      - name: chemistry
+        mmlu_categories: [chemistry]
+        model_scores:
+          - model: gpt-4
+            score: 1.0
+      - name: health
+        mmlu_categories: [health]
+        model_scores:
+          - model: gpt-4
+            score: 1.0
+      - name: law
+        mmlu_categories: [law]
+        model_scores:
+          - model: gpt-4
+            score: 1.0
+
+      # --- Gemini: 인문/사회/기타 ---
+      - name: business
+        mmlu_categories: [business]
+        model_scores:
+          - model: gemini-2.5-pro
+            score: 1.0
+      - name: economics
+        mmlu_categories: [economics]
+        model_scores:
+          - model: gemini-2.5-pro
+            score: 1.0
+      - name: history
+        mmlu_categories: [history]
+        model_scores:
+          - model: gemini-2.5-pro
+            score: 1.0
+      - name: philosophy
+        mmlu_categories: [philosophy]
+        model_scores:
+          - model: gemini-2.5-pro
+            score: 1.0
+      - name: psychology
+        mmlu_categories: [psychology]
+        model_scores:
+          - model: gemini-2.5-pro
+            score: 1.0
+      - name: other
+        mmlu_categories: [other]
+        model_scores:
+          - model: gemini-2.5-pro
+            score: 1.0
+
+global:
+  model_catalog:
+    system:
+      # 실제로 실행해보니 model_id 계열 필드는 반드시 "models/<이름>" 형태의
+      # 로컬 경로 별칭이어야 다운로드 프로비저닝 대상으로 인식됨
+      # (src/semantic-router/pkg/modeldownload/config_parser.go의
+      #  recordModelPath가 "models/" 접두사 없는 값은 건너뜀).
+      # 실제 HF 리포지토리(llm-semantic-router/mmbert32k-intent-classifier-merged)는
+      # 이 별칭에 대한 라우터 내장 기본 레지스트리로 자동 해석됨 — CPU 전용,
+      # ~0.3B 파라미터라 별도 GPU/CUDA 불필요.
+      domain_classifier: models/mmbert32k-intent-classifier-merged
+
+    modules:
+      classifier:
+        domain:
+          enabled: true
+          model_ref: domain_classifier
+          model_id: models/mmbert32k-intent-classifier-merged
+          threshold: 0.5
+          use_cpu: true
+          use_mmbert_32k: true
+          category_mapping_path: models/mmbert32k-intent-classifier-merged/category_mapping.json
+          # 분류 신뢰도가 threshold 미만이면 이 카테고리로 폴백 (-> Gemini로 라우팅)
+          fallback_category: other
