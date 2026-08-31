@@ -1,0 +1,11 @@
+question,task_category,company,complexity_score,size,route
+안녕하세요,other,openai,0.1268,small,openai/small
+파이썬으로 이진 탐색 구현해줘,computer science,openai,0.6399,medium,openai/medium
+미적분 문제 풀어줘,psychology,openai,0.5158,medium,openai/medium
+계약서 위험 조항 검토해줘,law,openai,0.5918,medium,openai/medium
+세포 분열 과정 설명해줘,biology,google,0.6667,medium,google/medium
+오늘 점심 뭐 먹을까?,other,openai,0.2232,small,openai/small
+칸트의 정언명령을 쉽게 설명해줘,philosophy,openai,0.4916,medium,openai/medium
+Explain quantum entanglement in simple terms,engineering,openai,0.6634,medium,openai/medium
+Write a Python function for binary search,computer science,openai,0.6399,medium,openai/medium
+Summarize the causes of the French Revolution,history,openai,0.628,medium,openai/medium
