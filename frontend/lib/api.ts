@@ -4,13 +4,20 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export class ChatApiError extends Error {
   selectedModel?: string | null;
-  category?: string | null;
+  taskCategory?: string | null;
+  complexityScore?: number | null;
 
-  constructor(message: string, selectedModel?: string | null, category?: string | null) {
+  constructor(
+    message: string,
+    selectedModel?: string | null,
+    taskCategory?: string | null,
+    complexityScore?: number | null
+  ) {
     super(message);
     this.name = "ChatApiError";
     this.selectedModel = selectedModel;
-    this.category = category;
+    this.taskCategory = taskCategory;
+    this.complexityScore = complexityScore;
   }
 }
 
@@ -24,12 +31,12 @@ export async function sendChat(body: ChatRequestBody): Promise<ChatResponseBody>
   if (!res.ok) {
     const payload = await res.json().catch(() => null);
     const detail = payload?.detail;
-    // 백엔드는 { message, selected_model, category } 형태로 detail을 내려줌
     if (detail && typeof detail === "object") {
       throw new ChatApiError(
         detail.message ?? `요청 실패 (HTTP ${res.status})`,
         detail.selected_model,
-        detail.category
+        detail.task_category,
+        detail.complexity_score
       );
     }
     throw new ChatApiError(

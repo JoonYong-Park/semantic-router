@@ -1,33 +1,4 @@
 services:
-  router:
-    image: ghcr.io/vllm-project/semantic-router/extproc:latest
-    container_name: semantic-router
-    env_file:
-      - .env
-    environment:
-      CONFIG_FILE: /app/config/config.yaml
-      HF_HOME: /app/models-cache
-      HF_TOKEN: ${HF_TOKEN:-}
-    volumes:
-      - ./config/config.yaml:/app/config/config.yaml:ro
-      - router_models_cache:/app/models-cache
-      - router_models:/app/models
-    ports:
-      - "50051:50051"
-    restart: unless-stopped
-
-  envoy:
-    image: envoyproxy/envoy:v1.31.7
-    container_name: envoy
-    depends_on:
-      - router
-    volumes:
-      - ./config/envoy.yaml:/etc/envoy/envoy.yaml:ro
-    ports:
-      - "8801:8801"
-      - "19000:19000"
-    restart: unless-stopped
-
   backend:
     build:
       context: ./backend
@@ -36,11 +7,8 @@ services:
       - .env
     environment:
       FRONTEND_ORIGIN: http://localhost:3000
-      ROUTER_URL: http://envoy:8801/v1/chat/completions
     volumes:
-      - ./config/config.yaml:/app/config/config.yaml:ro
-    depends_on:
-      - envoy
+      - backend_hf_cache:/app/hf-cache
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -58,5 +26,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  router_models_cache:
-  router_models:
+  backend_hf_cache:

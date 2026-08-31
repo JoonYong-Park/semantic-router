@@ -1,15 +1,47 @@
+import asyncio
+import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.providers import call_claude, call_gemini, call_openai
-from app.routing import RouterCallError, call_router_auto
+from app import classifier, complexity
+from app.models_config import DEFAULT_MANUAL_SIZE, get_model
+from app.providers import call_model
+from app.router import select_model
 from app.schemas import ChatRequest, ChatResponse
+
+logger = logging.getLogger("uvicorn.error")
 
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
 
-app = FastAPI(title="NPC AI Assistant - Phase 1 Demo")
+
+async def _load_models_background() -> None:
+    """HF 모델을 백그라운드 로드 — startup await 시 수동 모드까지 막히지 않게."""
+    logger.info("카테고리 분류기 로드 시작...")
+    try:
+        await asyncio.to_thread(classifier.load_classifier)
+        logger.info("카테고리 분류기 로드 완료")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("카테고리 분류기 로드 실패: %s", exc)
+
+    logger.info("복잡도 임베딩 모델 로드 시작...")
+    try:
+        await asyncio.to_thread(complexity.load_complexity_model)
+        logger.info("복잡도 임베딩 모델 로드 완료 - auto 모드 사용 가능")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("복잡도 임베딩 모델 로드 실패 - auto 모드를 쓸 수 없습니다: %s", exc)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_load_models_background())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="NPIA - Category/Complexity Routing", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,12 +50,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MANUAL_DISPLAY_NAMES = {"gpt": "GPT", "gemini": "Gemini", "claude": "Claude"}
+
+def _auto_mode_ready() -> bool:
+    return classifier.is_ready() and complexity.is_ready()
 
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "category_classifier_ready": classifier.is_ready(),
+        "complexity_model_ready": complexity.is_ready(),
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -32,48 +70,43 @@ async def chat(req: ChatRequest) -> ChatResponse:
     if not message:
         raise HTTPException(status_code=400, detail="message가 비어 있습니다.")
 
-    try:
-        if req.mode == "auto":
-            answer, selected_model, category = await call_router_auto(message)
-            return ChatResponse(
-                answer=answer, selected_model=selected_model, category=category
+    task_category: str | None = None
+    complexity_score: float | None = None
+
+    if req.mode == "auto":
+        if not _auto_mode_ready():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "분류 모델이 아직 준비되지 않았습니다. 잠시 후 다시 시도하거나 모델을 직접 선택하세요.",
+                    "selected_model": None,
+                },
             )
-
-        if req.mode == "gpt":
-            answer = await call_openai(message)
-        elif req.mode == "gemini":
-            answer = await call_gemini(message)
-        elif req.mode == "claude":
-            answer = await call_claude(message)
-        else:
-            raise HTTPException(status_code=400, detail=f"알 수 없는 mode: {req.mode}")
-
-        return ChatResponse(
-            answer=answer,
-            selected_model=MANUAL_DISPLAY_NAMES[req.mode],
-            category=None,
+        # 두 모델 다 CPU 바운드라 이벤트 루프를 막지 않도록 스레드에서 돌린다.
+        task_category = await asyncio.to_thread(classifier.classify, message)
+        complexity_score = await asyncio.to_thread(
+            complexity.complexity_score, message
         )
+        spec = select_model(task_category, complexity_score)
+    else:
+        spec = get_model(req.mode, req.size or DEFAULT_MANUAL_SIZE)
 
-    except HTTPException:
-        raise
-    except RouterCallError as exc:
-        # Auto 모드 실패: 라우터가 모델을 선택하는 데까지 성공했다면
-        # 그 모델 정보를 실어서, 실패해도 "어떤 모델에게 요청했는지" 보여준다.
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "message": str(exc),
-                "selected_model": exc.selected_model,
-                "category": exc.category,
-            },
-        ) from exc
-    except Exception as exc:  # noqa: BLE001 - 데모용 단일 에러 경로
-        # 수동 모드 실패는 mode로 대상 모델이 항상 확정돼 있으므로 그대로 실어 보낸다.
+    try:
+        answer = await call_model(spec, message)
+    except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
             detail={
                 "message": f"모델 호출 실패: {exc}",
-                "selected_model": MANUAL_DISPLAY_NAMES.get(req.mode),
-                "category": None,
+                "selected_model": spec.display_name,
+                "task_category": task_category,
+                "complexity_score": complexity_score,
             },
         ) from exc
+
+    return ChatResponse(
+        answer=answer,
+        selected_model=spec.display_name,
+        task_category=task_category,
+        complexity_score=complexity_score,
+    )
