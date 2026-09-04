@@ -6,3 +6,8 @@ torch==2.5.1
 transformers==4.57.6
 huggingface-hub==0.36.2
 numpy==1.26.4
+
+# 채팅방 영속화 + 컨텍스트 토큰 계산
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+tiktoken==0.8.0

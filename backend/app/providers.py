@@ -1,6 +1,8 @@
 """Provider API 호출 (OpenAI / Gemini OpenAI-compat / Anthropic)."""
 
+import json
 import os
+from typing import AsyncIterator
 
 import httpx
 
@@ -24,6 +26,8 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 MAX_OUTPUT_TOKENS = 2048
 REQUEST_TIMEOUT = httpx.Timeout(120.0)
+# 스트리밍은 청크 사이 대기 시간이 길어질 수 있어 read 타임아웃을 넉넉히 둔다.
+STREAM_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 
 
 async def call_model(spec: ModelSpec, message: str) -> str:
@@ -65,3 +69,80 @@ async def call_model(spec: ModelSpec, message: str) -> str:
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
+
+async def stream_model(
+    spec: ModelSpec, messages: list[dict[str, str]]
+) -> AsyncIterator[str]:
+    """대화 이력(messages)을 포함해 호출하고, 텍스트 조각을 스트리밍으로 yield한다.
+
+    /chat(call_model)과 달리 단일 message가 아니라 [{"role","content"}, ...]
+    전체 이력을 받는다 - 채팅방 컨텍스트 유지용으로 새로 추가한 함수이며,
+    기존 call_model/ /chat 엔드포인트는 그대로 둔다.
+    """
+    api_key = API_KEYS.get(spec.company, "")
+    if not api_key:
+        raise RuntimeError(
+            f"{KEY_ENV_NAMES[spec.company]}가 설정되지 않았습니다 (.env 확인)."
+        )
+
+    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
+        if spec.company == "anthropic":
+            async with client.stream(
+                "POST",
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": spec.model_id,
+                    "max_tokens": MAX_OUTPUT_TOKENS,
+                    "messages": messages,
+                    "stream": True,
+                },
+            ) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    resp_for_raise = httpx.Response(
+                        resp.status_code, content=body, request=resp.request
+                    )
+                    resp_for_raise.raise_for_status()
+
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    event = json.loads(line[len("data: ") :])
+                    if (
+                        event.get("type") == "content_block_delta"
+                        and event.get("delta", {}).get("type") == "text_delta"
+                    ):
+                        yield event["delta"]["text"]
+            return
+
+        # openai / google 은 동일한 Chat Completions SSE 형식
+        url = OPENAI_URL if spec.company == "openai" else GOOGLE_URL
+        async with client.stream(
+            "POST",
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": spec.model_id, "messages": messages, "stream": True},
+        ) as resp:
+            if resp.status_code >= 400:
+                body = await resp.aread()
+                resp_for_raise = httpx.Response(
+                    resp.status_code, content=body, request=resp.request
+                )
+                resp_for_raise.raise_for_status()
+
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = line[len("data: ") :]
+                if payload == "[DONE]":
+                    break
+                chunk = json.loads(payload)
+                delta = chunk["choices"][0].get("delta", {})
+                content = delta.get("content")
+                if content:
+                    yield content

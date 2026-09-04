@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: npia
+      POSTGRES_PASSWORD: npia
+      POSTGRES_DB: npia
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U npia"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -7,8 +25,12 @@ services:
       - .env
     environment:
       FRONTEND_ORIGIN: http://localhost:3000
+      DATABASE_URL: postgresql+asyncpg://npia:npia@postgres:5432/npia
     volumes:
       - backend_hf_cache:/app/hf-cache
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -27,3 +49,4 @@ services:
 
 volumes:
   backend_hf_cache:
+  postgres_data:

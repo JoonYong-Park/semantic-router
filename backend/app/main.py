@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import classifier, complexity
+from app.conversations import router as conversations_router
+from app.db import init_db
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.providers import call_model
 from app.router import select_model
@@ -36,6 +38,8 @@ async def _load_models_background() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 채팅방/메시지 테이블 준비 (데모 단계라 Alembic 대신 create_all)
+    await init_db()
     task = asyncio.create_task(_load_models_background())
     yield
     task.cancel()
@@ -49,6 +53,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(conversations_router)
 
 
 def _auto_mode_ready() -> bool:

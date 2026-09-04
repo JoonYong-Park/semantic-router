@@ -7,7 +7,7 @@ In the `feat: add phase-1 chat demo with model auto-routing` stage, classificati
 ```
 browser(:3000)  →  frontend (Next.js)
                       ↓
-                 backend (FastAPI, :8000)
+                 backend (FastAPI, :8000)  ←→  postgres (:5432)
                       ↓
          auto: category → company, complexity → size
          manual: pick company & size
@@ -22,6 +22,14 @@ browser(:3000)  →  frontend (Next.js)
 | Anthropic | claude-haiku-4-5-20251001 | claude-sonnet-5 | claude-opus-5 |
 
 Model IDs and routing maps live in [backend/app/models_config.py](backend/app/models_config.py).
+
+## Features
+
+On top of the core category/complexity routing above:
+
+- **Persistent conversations & streaming** — chat history is stored in Postgres, and replies stream via SSE with a token-budgeted context window, plus auto-generated chat titles.
+
+More features are planned (custom system prompts, pulling info from other AI services, token usage stats, admin tools, etc.) — this list will grow with a short bullet per feature as they land.
 
 ## Run
 
@@ -42,6 +50,9 @@ On first start, classifier models are downloaded from Hugging Face and cached in
 docker compose ps
 docker compose logs -f backend
 
+# Health check (pretty-printed)
+curl -s http://localhost:8000/health | python3 -m json.tool
+
 # Rebuild after code changes
 docker compose up -d --build
 docker compose up -d --build backend   # backend only
@@ -49,5 +60,5 @@ docker compose up -d --build backend   # backend only
 # Stop
 docker compose stop          # stop containers (volumes kept)
 docker compose down          # remove containers (model cache kept)
-docker compose down -v      # also delete volumes (models re-download next run)
+docker compose down -v      # also delete volumes (models re-download, DB data wiped)
 ```

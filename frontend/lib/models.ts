@@ -60,3 +60,16 @@ export function labelFor(mode: Mode, size: Size): string {
     `${mode}/${size}`
   );
 }
+
+export const SIZE_LABEL_KO: Record<Size, string> = {
+  small: "소형",
+  medium: "중형",
+  large: "대형",
+};
+
+// ModelBadge처럼 model_used(display_name)만 문자열로 받는 곳에서, 그 모델이
+// 몇 사이즈짜리인지 역으로 찾을 때 사용. complexity_score 임계값을 프론트에
+// 다시 두지 않고, 이미 유지 중인 MODEL_OPTIONS 카탈로그에서 그대로 찾는다.
+export function sizeFromLabel(label: string): Size | null {
+  return MODEL_OPTIONS.find((m) => m.label === label)?.size ?? null;
+}

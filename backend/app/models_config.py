@@ -19,24 +19,14 @@ MODEL_CATALOG: dict[tuple[Company, Size], ModelSpec] = {
     ("openai", "large"): ModelSpec("gpt-5.6-sol", "openai", "large", "GPT-5.6 Sol"),
     ("openai", "medium"): ModelSpec("gpt-5.6-terra", "openai", "medium", "GPT-5.6 Terra"),
     ("openai", "small"): ModelSpec("gpt-5.6-luna", "openai", "small", "GPT-5.6 Luna"),
-    ("google", "large"): ModelSpec(
-        "gemini-3.1-pro-preview", "google", "large", "Gemini 3.1 Pro"
-    ),
-    ("google", "medium"): ModelSpec(
-        "gemini-3.6-flash", "google", "medium", "Gemini 3.6 Flash"
-    ),
-    ("google", "small"): ModelSpec(
-        "gemini-3.5-flash-lite", "google", "small", "Gemini 3.5 Flash Lite"
-    ),
-    ("anthropic", "large"): ModelSpec(
-        "claude-opus-5", "anthropic", "large", "Claude Opus 5"
-    ),
-    ("anthropic", "medium"): ModelSpec(
-        "claude-sonnet-5", "anthropic", "medium", "Claude Sonnet 5"
-    ),
-    ("anthropic", "small"): ModelSpec(
-        "claude-haiku-4-5-20251001", "anthropic", "small", "Claude Haiku 4.5"
-    ),
+    
+    ("google", "large"): ModelSpec("gemini-3.1-pro-preview", "google", "large", "Gemini 3.1 Pro"),
+    ("google", "medium"): ModelSpec("gemini-3.6-flash", "google", "medium", "Gemini 3.6 Flash"),
+    ("google", "small"): ModelSpec("gemini-3.5-flash-lite", "google", "small", "Gemini 3.5 Flash Lite"),
+
+    ("anthropic", "large"): ModelSpec("claude-opus-5", "anthropic", "large", "Claude Opus 5"),
+    ("anthropic", "medium"): ModelSpec("claude-sonnet-5", "anthropic", "medium", "Claude Sonnet 5"),
+    ("anthropic", "small"): ModelSpec("claude-haiku-4-5-20251001", "anthropic", "small", "Claude Haiku 4.5"),
 }
 
 # --- 라우팅 정책 1: task_category(14개 MMLU-Pro 카테고리) -> 회사 ---

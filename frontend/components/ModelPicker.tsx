@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { COMPANY_ICON, MODEL_OPTIONS, labelFor } from "@/lib/models";
+import { COMPANY_ICON, MODEL_OPTIONS, SIZE_LABEL_KO, labelFor } from "@/lib/models";
 import { Mode, Size } from "@/lib/types";
 
 function CompanyIconImg({ mode }: { mode: Exclude<Mode, "auto"> }) {
@@ -56,6 +56,11 @@ export default function ModelPicker({
       >
         {mode !== "auto" && <CompanyIconImg mode={mode} />}
         {currentLabel}
+        {mode !== "auto" && (
+          <span className="text-gray-400 dark:text-gray-500">
+            ({SIZE_LABEL_KO[size]} 모델)
+          </span>
+        )}
         <svg
           className={`h-3.5 w-3.5 text-gray-400 transition-transform dark:text-gray-500 ${open ? "" : "rotate-180"}`}
           viewBox="0 0 20 20"
@@ -108,13 +113,16 @@ export default function ModelPicker({
                       onSelect(opt.mode, opt.size);
                       setOpen(false);
                     }}
-                    className={`flex w-full items-center px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 ${
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 ${
                       selected
                         ? "font-semibold text-gray-900 dark:text-white"
                         : "text-gray-700 dark:text-gray-300"
                     }`}
                   >
-                    {opt.label}
+                    <span>{opt.label}</span>
+                    <span className="text-[11px] font-normal text-gray-400 dark:text-gray-500">
+                      {SIZE_LABEL_KO[opt.size]}
+                    </span>
                   </button>
                 );
               })}

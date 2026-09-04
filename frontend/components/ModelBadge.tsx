@@ -1,4 +1,4 @@
-import { COMPANY_ICON, companyFromLabel } from "@/lib/models";
+import { COMPANY_ICON, SIZE_LABEL_KO, companyFromLabel, sizeFromLabel } from "@/lib/models";
 
 function CompanyIconImg({ model }: { model: string }) {
   const company = companyFromLabel(model);
@@ -31,6 +31,7 @@ export default function ModelBadge({
   const subColorClass = isError
     ? "bg-red-200 dark:bg-red-900"
     : "bg-gray-200 dark:bg-gray-700";
+  const size = sizeFromLabel(model);
 
   return (
     <div
@@ -38,7 +39,12 @@ export default function ModelBadge({
     >
       <span className="inline-flex items-center gap-1.5">
         <CompanyIconImg model={model} />
-        {isError ? `${model}에게 요청했지만 실패했습니다` : `${model}`}
+        {isError ? `${model}에게 요청했지만 실패했습니다` : model}
+        {!isError && size && (
+          <span className="font-normal text-gray-400 dark:text-gray-500">
+            ({SIZE_LABEL_KO[size]} 모델)
+          </span>
+        )}
       </span>
       {taskCategory && (
         <span className={`rounded-full px-2 py-0.5 text-[11px] font-normal ${subColorClass}`}>
@@ -47,7 +53,7 @@ export default function ModelBadge({
       )}
       {typeof complexityScore === "number" && (
         <span className={`rounded-full px-2 py-0.5 text-[11px] font-normal ${subColorClass}`}>
-          복잡도 {complexityScore.toFixed(3)}
+          복잡도: {complexityScore.toFixed(2)}
         </span>
       )}
     </div>
