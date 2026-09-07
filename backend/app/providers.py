@@ -88,6 +88,21 @@ async def stream_model(
 
     async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         if spec.company == "anthropic":
+            # Anthropic Messages API는 messages 배열 안에 role="system"을 허용하지
+            # 않고, 최상위 system 파라미터로 따로 받는다. 다른 두 회사는 system
+            # role을 messages에 그대로 둬도 되는 OpenAI 호환 방식이라 그쪽은 안 건드림.
+            system_texts = [m["content"] for m in messages if m["role"] == "system"]
+            chat_messages = [m for m in messages if m["role"] != "system"]
+
+            payload: dict = {
+                "model": spec.model_id,
+                "max_tokens": MAX_OUTPUT_TOKENS,
+                "messages": chat_messages,
+                "stream": True,
+            }
+            if system_texts:
+                payload["system"] = "\n\n".join(system_texts)
+
             async with client.stream(
                 "POST",
                 ANTHROPIC_URL,
@@ -95,12 +110,7 @@ async def stream_model(
                     "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                 },
-                json={
-                    "model": spec.model_id,
-                    "max_tokens": MAX_OUTPUT_TOKENS,
-                    "messages": messages,
-                    "stream": True,
-                },
+                json=payload,
             ) as resp:
                 if resp.status_code >= 400:
                     body = await resp.aread()

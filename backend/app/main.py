@@ -13,6 +13,7 @@ from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.providers import call_model
 from app.router import select_model
 from app.schemas import ChatRequest, ChatResponse
+from app.settings import router as settings_router
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -55,6 +56,7 @@ app.add_middleware(
 )
 
 app.include_router(conversations_router)
+app.include_router(settings_router)
 
 
 def _auto_mode_ready() -> bool:

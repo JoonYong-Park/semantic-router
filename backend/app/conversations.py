@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import classifier, complexity, providers
 from app.db import SessionLocal, get_session
-from app.db_models import DEMO_USER_ID, Conversation, Message
+from app.db_models import DEMO_USER_ID, Conversation, Message, UserSettings
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.router import select_model
 from app.schemas import ConversationOut, MessageCreate, MessageOut
@@ -162,6 +162,13 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
         )
         is_first_message = count_result.scalar_one() == 0
 
+        # 개인 지침은 대화방마다가 아니라 사용자 하나에 귀속되므로 시작 시점에 한 번만 조회.
+        settings_result = await check_session.execute(
+            select(UserSettings).where(UserSettings.user_id == DEMO_USER_ID)
+        )
+        settings = settings_result.scalar_one_or_none()
+        personal_instruction = settings.personal_instruction if settings else None
+
     async def event_stream():
         # StreamingResponse의 제너레이터는 응답이 실제로 스트리밍되는 동안 실행되므로,
         # FastAPI Depends로 주입된 세션(요청 처리 직후 정리됨)을 쓰면 그 사이 세션이
@@ -208,6 +215,12 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
 
             # 4) 슬라이딩 윈도우로 이전 대화 이력 구성
             history = await _build_history(session, conversation_id, body.content)
+
+            # 4.5) 개인 지침이 있으면 system 메시지로 맨 앞에 주입 (공백만 있는 값도 스킵)
+            if personal_instruction and personal_instruction.strip():
+                history = [
+                    {"role": "system", "content": personal_instruction}
+                ] + history
 
             # 5) LLM 스트리밍 호출
             full_response = ""

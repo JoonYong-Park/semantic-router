@@ -49,6 +49,12 @@ export interface SendMessageBody {
   size?: Size;
 }
 
+// --- 개인 지침(설정) ---
+
+export interface Settings {
+  personal_instruction: string | null;
+}
+
 export type StreamEvent =
   | { type: "meta"; model: string; category: string | null; complexity: number | null }
   | { type: "chunk"; content: string }

@@ -12,6 +12,7 @@ import ChatBubble from "@/components/ChatBubble";
 import DateDivider from "@/components/DateDivider";
 import EmptyState from "@/components/EmptyState";
 import Sidebar from "@/components/Sidebar";
+import SettingsModal from "@/components/SettingsModal";
 import {
   createConversation,
   deleteConversation,
@@ -38,6 +39,7 @@ export default function Home() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const isStreaming = phase !== "idle";
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -257,7 +259,10 @@ export default function Home() {
         onSelect={handleSelectConversation}
         onNew={handleNewChat}
         onDelete={handleDeleteConversation}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
+
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
       <div className="flex min-w-0 flex-1 flex-col bg-white dark:bg-gray-950">
         <header className="flex items-center justify-end border-b border-gray-100 px-4 py-2.5 dark:border-gray-800">

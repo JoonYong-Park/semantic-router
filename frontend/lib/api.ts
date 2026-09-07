@@ -4,6 +4,7 @@ import {
   Conversation,
   DBMessage,
   SendMessageBody,
+  Settings,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -77,6 +78,30 @@ export async function deleteConversation(id: string): Promise<void> {
 export async function getConversationMessages(id: string): Promise<DBMessage[]> {
   const res = await fetch(`${API_URL}/conversations/${id}/messages`);
   if (!res.ok) throw new Error(`메시지를 불러오지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+// --- 개인 지침(설정) ---
+
+export async function getSettings(): Promise<Settings> {
+  const res = await fetch(`${API_URL}/settings`);
+  if (!res.ok) throw new Error(`설정을 불러오지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function updateSettings(instruction: string): Promise<Settings> {
+  const res = await fetch(`${API_URL}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ personal_instruction: instruction }),
+  });
+  if (!res.ok) throw new Error(`설정을 저장하지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function deleteInstruction(): Promise<Settings> {
+  const res = await fetch(`${API_URL}/settings/instruction`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`개인 지침을 삭제하지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 

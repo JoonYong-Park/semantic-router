@@ -49,3 +49,14 @@ class MessageCreate(BaseModel):
     content: str
     mode: Mode
     size: Optional[Size] = None
+
+
+# --- 개인 지침(personal instruction) 설정용 ---
+
+
+class SettingsOut(BaseModel):
+    personal_instruction: Optional[str] = None
+
+
+class SettingsUpdate(BaseModel):
+    personal_instruction: Optional[str] = None
