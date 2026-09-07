@@ -53,6 +53,7 @@ export interface SendMessageBody {
 
 export interface Settings {
   personal_instruction: string | null;
+  imported_memory: string | null;
 }
 
 export type StreamEvent =

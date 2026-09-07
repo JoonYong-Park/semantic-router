@@ -105,6 +105,22 @@ export async function deleteInstruction(): Promise<Settings> {
   return res.json();
 }
 
+export async function importMemory(text: string): Promise<Settings> {
+  const res = await fetch(`${API_URL}/settings/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`가져오기에 실패했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function deleteImportedMemory(): Promise<{ imported_memory: string | null }> {
+  const res = await fetch(`${API_URL}/settings/import`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`가져온 정보를 삭제하지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
 /**
  * SSE 스트리밍 전송. fetch의 ReadableStream을 직접 읽어서 파싱한다
  * (EventSource는 POST 바디를 못 보내서 못 씀).

@@ -56,7 +56,16 @@ class MessageCreate(BaseModel):
 
 class SettingsOut(BaseModel):
     personal_instruction: Optional[str] = None
+    imported_memory: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
     personal_instruction: Optional[str] = None
+
+
+class ImportMemoryCreate(BaseModel):
+    text: str
+
+
+class ImportedMemoryOut(BaseModel):
+    imported_memory: Optional[str] = None

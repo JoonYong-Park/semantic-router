@@ -13,6 +13,7 @@ import DateDivider from "@/components/DateDivider";
 import EmptyState from "@/components/EmptyState";
 import Sidebar from "@/components/Sidebar";
 import SettingsModal from "@/components/SettingsModal";
+import ImportMemoryModal from "@/components/ImportMemoryModal";
 import {
   createConversation,
   deleteConversation,
@@ -39,7 +40,9 @@ export default function Home() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeSettingsModal, setActiveSettingsModal] = useState<"personal" | "import" | null>(
+    null
+  );
 
   const isStreaming = phase !== "idle";
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -259,10 +262,16 @@ export default function Home() {
         onSelect={handleSelectConversation}
         onNew={handleNewChat}
         onDelete={handleDeleteConversation}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenPersonalInstruction={() => setActiveSettingsModal("personal")}
+        onOpenImportMemory={() => setActiveSettingsModal("import")}
       />
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {activeSettingsModal === "personal" && (
+        <SettingsModal onClose={() => setActiveSettingsModal(null)} />
+      )}
+      {activeSettingsModal === "import" && (
+        <ImportMemoryModal onClose={() => setActiveSettingsModal(null)} />
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col bg-white dark:bg-gray-950">
         <header className="flex items-center justify-end border-b border-gray-100 px-4 py-2.5 dark:border-gray-800">

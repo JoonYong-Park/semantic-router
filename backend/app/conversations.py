@@ -168,6 +168,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
         )
         settings = settings_result.scalar_one_or_none()
         personal_instruction = settings.personal_instruction if settings else None
+        imported_memory = settings.imported_memory if settings else None
 
     async def event_stream():
         # StreamingResponse의 제너레이터는 응답이 실제로 스트리밍되는 동안 실행되므로,
@@ -216,10 +217,16 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             # 4) 슬라이딩 윈도우로 이전 대화 이력 구성
             history = await _build_history(session, conversation_id, body.content)
 
-            # 4.5) 개인 지침이 있으면 system 메시지로 맨 앞에 주입 (공백만 있는 값도 스킵)
-            if personal_instruction and personal_instruction.strip():
+            # 4.5) 개인 지침 + 다른 AI에서 가져온 메모리를 system 메시지로 맨 앞에 주입
+            # (공백만 있는 값도 스킵). 개인 지침을 먼저 두어 충돌 시 우선 적용되게 한다.
+            system_parts = [
+                p.strip()
+                for p in (personal_instruction, imported_memory)
+                if p and p.strip()
+            ]
+            if system_parts:
                 history = [
-                    {"role": "system", "content": personal_instruction}
+                    {"role": "system", "content": "\n\n".join(system_parts)}
                 ] + history
 
             # 5) LLM 스트리밍 호출
