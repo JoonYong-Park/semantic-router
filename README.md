@@ -25,11 +25,14 @@ Model IDs and routing maps live in [backend/app/models_config.py](backend/app/mo
 
 ## Features
 
-On top of the core category/complexity routing above:
+- **Category classification** — mmBERT classifies each question into one of 14 MMLU-Pro categories, which maps to a company (OpenAI / Google / Anthropic).
+- **Complexity scoring** — E5 embedding similarity against easy/hard reference examples picks a size (small / medium / large) within that company.
+- **Context retention** — each reply is generated with a token-budgeted sliding window of prior turns, not just the latest message.
+- **Streaming responses** — replies stream token-by-token over SSE instead of waiting for the full response.
+- **Persistent conversations** — chat rooms and messages are stored in Postgres, with auto-generated chat titles.
+- **Personal instructions** — users can set a personal instruction from the sidebar that shapes how replies are written.
 
-- **Persistent conversations & streaming** — chat history is stored in Postgres, and replies stream via SSE with a token-budgeted context window, plus auto-generated chat titles.
-
-More features are planned (custom system prompts, pulling info from other AI services, token usage stats, admin tools, etc.) — this list will grow with a short bullet per feature as they land.
+More features are planned (pulling info from other AI services, token usage stats, admin tools, etc.) — this list will grow with a short bullet per feature as they land.
 
 ## Run
 
