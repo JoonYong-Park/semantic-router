@@ -56,6 +56,10 @@ export interface Settings {
   imported_memory: string | null;
 }
 
+export interface SettingsUpdateBody {
+  personal_instruction?: string;
+}
+
 export type StreamEvent =
   | { type: "meta"; model: string; category: string | null; complexity: number | null }
   | { type: "chunk"; content: string }

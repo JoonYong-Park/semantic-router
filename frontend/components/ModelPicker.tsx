@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { COMPANY_ICON, MODEL_OPTIONS, SIZE_LABEL_KO, labelFor } from "@/lib/models";
+import { COMPANY_ICON, MODEL_OPTIONS, SIZE_LABEL, labelFor } from "@/lib/models";
 import { Mode, Size } from "@/lib/types";
 
 function CompanyIconImg({ mode }: { mode: Exclude<Mode, "auto"> }) {
@@ -58,7 +58,7 @@ export default function ModelPicker({
         {currentLabel}
         {mode !== "auto" && (
           <span className="text-gray-400 dark:text-gray-500">
-            ({SIZE_LABEL_KO[size]} 모델)
+            ({SIZE_LABEL[size]})
           </span>
         )}
         <svg
@@ -121,7 +121,7 @@ export default function ModelPicker({
                   >
                     <span>{opt.label}</span>
                     <span className="text-[11px] font-normal text-gray-400 dark:text-gray-500">
-                      {SIZE_LABEL_KO[opt.size]}
+                      {SIZE_LABEL[opt.size]}
                     </span>
                   </button>
                 );

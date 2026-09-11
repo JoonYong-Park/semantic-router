@@ -3,7 +3,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import (
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +36,11 @@ class Conversation(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    # 자동 메모리 추출이 "이 메시지 이후로 아직 요약 안 됨"을 판단하는 기준점.
+    # FK는 일부러 안 건다 - 메시지 삭제/재정렬 시나리오가 없는 데모라 단순 포인터로 충분.
+    last_extracted_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, default=None
     )
 
     # 관계(relationship)는 일부러 안 둔다 - 비동기 세션에서 지연 로딩(lazy load)
@@ -80,3 +94,22 @@ class UserSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class UserMemory(Base):
+    """자동 메모리 추출로 쌓인 사실 한 줄 = row 하나.
+    개인 지침/가져온 메모리(UserSettings)와 달리 여러 줄이라 별도 테이블로 둔다.
+    """
+
+    __tablename__ = "user_memory"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_user_memory_user_id", "user_id"),)

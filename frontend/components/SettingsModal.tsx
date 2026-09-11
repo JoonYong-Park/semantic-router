@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { deleteInstruction, getSettings, updateSettings } from "@/lib/api";
 
 const PLACEHOLDER = `예시:
-저는 SCM팀 담당자입니다.
+저는 NRS GLOBAL SCM팀 담당자입니다.
 전문 용어는 풀어서 설명해주세요.
 답변은 짧고 핵심만 알려주세요.
 표나 번호 목록 형식을 선호합니다.`;
@@ -16,7 +16,9 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     getSettings()
-      .then((s) => setInstruction(s.personal_instruction ?? ""))
+      .then((s) => {
+        setInstruction(s.personal_instruction ?? "");
+      })
       .catch(() => {
         // 조회 실패해도 빈 textarea로 그냥 열어둔다 (재입력해서 저장하면 됨)
       })
@@ -34,7 +36,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   async function handleSave() {
     setSaving(true);
     try {
-      await updateSettings(instruction);
+      await updateSettings({ personal_instruction: instruction });
       onClose();
     } catch {
       // 저장 실패 시 모달을 열어둬서 재시도할 수 있게 한다

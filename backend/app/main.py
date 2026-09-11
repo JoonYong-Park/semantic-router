@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import classifier, complexity
 from app.conversations import router as conversations_router
 from app.db import init_db
+from app.memory import router as memory_router
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.providers import call_model
 from app.router import select_model
@@ -57,6 +58,7 @@ app.add_middleware(
 
 app.include_router(conversations_router)
 app.include_router(settings_router)
+app.include_router(memory_router)
 
 
 def _auto_mode_ready() -> bool:

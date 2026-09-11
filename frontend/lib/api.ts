@@ -5,6 +5,7 @@ import {
   DBMessage,
   SendMessageBody,
   Settings,
+  SettingsUpdateBody,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -89,11 +90,11 @@ export async function getSettings(): Promise<Settings> {
   return res.json();
 }
 
-export async function updateSettings(instruction: string): Promise<Settings> {
+export async function updateSettings(body: SettingsUpdateBody): Promise<Settings> {
   const res = await fetch(`${API_URL}/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ personal_instruction: instruction }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`설정을 저장하지 못했습니다 (HTTP ${res.status})`);
   return res.json();
@@ -118,6 +119,14 @@ export async function importMemory(text: string): Promise<Settings> {
 export async function deleteImportedMemory(): Promise<{ imported_memory: string | null }> {
   const res = await fetch(`${API_URL}/settings/import`, { method: "DELETE" });
   if (!res.ok) throw new Error(`가져온 정보를 삭제하지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+// --- 자동 메모리 추출 ---
+
+export async function extractMemoryAll(): Promise<{ status: string; count: number }> {
+  const res = await fetch(`${API_URL}/memory/extract-all`, { method: "POST" });
+  if (!res.ok) throw new Error(`메모리 업데이트에 실패했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 

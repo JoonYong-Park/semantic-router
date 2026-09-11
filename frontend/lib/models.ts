@@ -61,10 +61,10 @@ export function labelFor(mode: Mode, size: Size): string {
   );
 }
 
-export const SIZE_LABEL_KO: Record<Size, string> = {
-  small: "소형",
-  medium: "중형",
-  large: "대형",
+export const SIZE_LABEL: Record<Size, string> = {
+  small: "Small",
+  medium: "Medium",
+  large: "Large",
 };
 
 // ModelBadge처럼 model_used(display_name)만 문자열로 받는 곳에서, 그 모델이

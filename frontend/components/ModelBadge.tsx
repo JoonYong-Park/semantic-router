@@ -1,4 +1,4 @@
-import { COMPANY_ICON, SIZE_LABEL_KO, companyFromLabel, sizeFromLabel } from "@/lib/models";
+import { COMPANY_ICON, SIZE_LABEL, companyFromLabel, sizeFromLabel } from "@/lib/models";
 
 function CompanyIconImg({ model }: { model: string }) {
   const company = companyFromLabel(model);
@@ -42,7 +42,7 @@ export default function ModelBadge({
         {isError ? `${model}에게 요청했지만 실패했습니다` : model}
         {!isError && size && (
           <span className="font-normal text-gray-400 dark:text-gray-500">
-            ({SIZE_LABEL_KO[size]} 모델)
+            ({SIZE_LABEL[size]})
           </span>
         )}
       </span>

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import classifier, complexity, providers
 from app.db import SessionLocal, get_session
-from app.db_models import DEMO_USER_ID, Conversation, Message, UserSettings
+from app.db_models import DEMO_USER_ID, Conversation, Message, UserMemory, UserSettings
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.router import select_model
 from app.schemas import ConversationOut, MessageCreate, MessageOut
@@ -170,6 +170,11 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
         personal_instruction = settings.personal_instruction if settings else None
         imported_memory = settings.imported_memory if settings else None
 
+        memory_result = await check_session.execute(
+            select(UserMemory).where(UserMemory.user_id == DEMO_USER_ID)
+        )
+        memory_facts = [m.content for m in memory_result.scalars().all()]
+
     async def event_stream():
         # StreamingResponse의 제너레이터는 응답이 실제로 스트리밍되는 동안 실행되므로,
         # FastAPI Depends로 주입된 세션(요청 처리 직후 정리됨)을 쓰면 그 사이 세션이
@@ -217,13 +222,22 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             # 4) 슬라이딩 윈도우로 이전 대화 이력 구성
             history = await _build_history(session, conversation_id, body.content)
 
-            # 4.5) 개인 지침 + 다른 AI에서 가져온 메모리를 system 메시지로 맨 앞에 주입
-            # (공백만 있는 값도 스킵). 개인 지침을 먼저 두어 충돌 시 우선 적용되게 한다.
-            system_parts = [
-                p.strip()
-                for p in (personal_instruction, imported_memory)
-                if p and p.strip()
-            ]
+            system_parts = []
+            if personal_instruction and personal_instruction.strip():
+                system_parts.append(f"[개인 지침]\n{personal_instruction.strip()}")
+            if imported_memory and imported_memory.strip():
+                system_parts.append(f"[가져온 정보]\n{imported_memory.strip()}")
+            if memory_facts:
+                facts_block = "\n".join(f"- {fact}" for fact in memory_facts)
+                system_parts.append(f"[기억]\n{facts_block}")
+
+            if len(system_parts) > 1:
+                priority_note = (
+                    "아래는 사용자에 대한 참고 정보다. 서로 내용이 충돌하면 "
+                    "[개인 지침] → [가져온 정보] → [기억] 순으로 우선 적용해."
+                )
+                system_parts = [priority_note] + system_parts
+
             if system_parts:
                 history = [
                     {"role": "system", "content": "\n\n".join(system_parts)}

@@ -43,14 +43,16 @@ async def get_settings(
 async def update_settings(
     body: SettingsUpdate, session: AsyncSession = Depends(get_session)
 ) -> SettingsOut:
+    # exclude_unset: 요청 바디에 실제로 포함된 필드만 골라서 적용 (필드가 늘어나도
+    # 안 보낸 필드를 None으로 덮어쓰지 않도록 안전하게 확장 가능한 패턴).
+    updates = body.model_dump(exclude_unset=True)
     settings = await _get_settings_row(session)
     if settings is None:
-        settings = UserSettings(
-            user_id=DEMO_USER_ID, personal_instruction=body.personal_instruction
-        )
+        settings = UserSettings(user_id=DEMO_USER_ID, **updates)
         session.add(settings)
     else:
-        settings.personal_instruction = body.personal_instruction
+        for key, value in updates.items():
+            setattr(settings, key, value)
     await session.commit()
     return _to_settings_out(settings)
 
