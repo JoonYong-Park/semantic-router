@@ -72,13 +72,20 @@ async def call_model(spec: ModelSpec, message: str) -> str:
 
 
 async def stream_model(
-    spec: ModelSpec, messages: list[dict[str, str]]
+    spec: ModelSpec,
+    messages: list[dict[str, str]],
+    usage: dict[str, int] | None = None,
 ) -> AsyncIterator[str]:
     """대화 이력(messages)을 포함해 호출하고, 텍스트 조각을 스트리밍으로 yield한다.
 
     /chat(call_model)과 달리 단일 message가 아니라 [{"role","content"}, ...]
     전체 이력을 받는다 - 채팅방 컨텍스트 유지용으로 새로 추가한 함수이며,
     기존 call_model/ /chat 엔드포인트는 그대로 둔다.
+
+    usage: 넘기면 각 공급사가 응답에 실어 보내는 실제 토큰 사용량
+    ({"input_tokens": N, "output_tokens": N})을 이 dict에 채워 넣는다
+    (스트리밍 도중 채워지므로 제너레이터가 끝난 뒤 호출자가 읽으면 됨).
+    응답에 값이 없으면 채우지 않으니, 호출자가 폴백을 준비해야 한다.
     """
     api_key = API_KEYS.get(spec.company, "")
     if not api_key:
@@ -123,20 +130,41 @@ async def stream_model(
                     if not line.startswith("data: "):
                         continue
                     event = json.loads(line[len("data: ") :])
-                    if (
-                        event.get("type") == "content_block_delta"
+                    event_type = event.get("type")
+
+                    # message_start에 입력 토큰, message_delta에 (누적) 출력
+                    # 토큰이 실려 온다 - Anthropic이 실제로 청구하는 값 그대로.
+                    if event_type == "message_start" and usage is not None:
+                        input_tokens = event.get("message", {}).get("usage", {}).get(
+                            "input_tokens"
+                        )
+                        if input_tokens is not None:
+                            usage["input_tokens"] = input_tokens
+                    elif event_type == "message_delta" and usage is not None:
+                        output_tokens = event.get("usage", {}).get("output_tokens")
+                        if output_tokens is not None:
+                            usage["output_tokens"] = output_tokens
+                    elif (
+                        event_type == "content_block_delta"
                         and event.get("delta", {}).get("type") == "text_delta"
                     ):
                         yield event["delta"]["text"]
             return
 
-        # openai / google 은 동일한 Chat Completions SSE 형식
+        # openai / google 은 동일한 Chat Completions SSE 형식.
+        # stream_options.include_usage를 켜면 마지막에 choices가 빈 배열이고
+        # usage만 채워진 청크가 하나 더 온다 (실제 청구 토큰 수).
         url = OPENAI_URL if spec.company == "openai" else GOOGLE_URL
         async with client.stream(
             "POST",
             url,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": spec.model_id, "messages": messages, "stream": True},
+            json={
+                "model": spec.model_id,
+                "messages": messages,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
         ) as resp:
             if resp.status_code >= 400:
                 body = await resp.aread()
@@ -152,7 +180,14 @@ async def stream_model(
                 if payload == "[DONE]":
                     break
                 chunk = json.loads(payload)
-                delta = chunk["choices"][0].get("delta", {})
-                content = delta.get("content")
+
+                if usage is not None and chunk.get("usage"):
+                    usage["input_tokens"] = chunk["usage"].get("prompt_tokens")
+                    usage["output_tokens"] = chunk["usage"].get("completion_tokens")
+
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                content = choices[0].get("delta", {}).get("content")
                 if content:
                     yield content

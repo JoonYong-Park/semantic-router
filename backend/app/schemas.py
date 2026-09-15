@@ -69,3 +69,47 @@ class ImportMemoryCreate(BaseModel):
 
 class ImportedMemoryOut(BaseModel):
     imported_memory: Optional[str] = None
+
+
+# --- 토큰 사용량 ---
+
+UsagePeriod = Literal["today", "week", "month", "year"]
+
+
+class UsageQuotaOut(BaseModel):
+    limit: int
+    used: int
+    remaining: int
+    percent: float
+    cycle_start: str
+    cycle_end: str
+    days_left: int
+
+
+class UsageChartPoint(BaseModel):
+    label: str
+    full_label: str
+    input: int
+    output: int
+
+
+class UsageByModelOut(BaseModel):
+    model: str
+    calls: int
+    input: int
+    output: int
+    total: int
+
+
+class UsageSummaryOut(BaseModel):
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+class UsageStatsOut(BaseModel):
+    period: UsagePeriod
+    range_label: str
+    summary: UsageSummaryOut
+    chart: list[UsageChartPoint]
+    by_model: list[UsageByModelOut]

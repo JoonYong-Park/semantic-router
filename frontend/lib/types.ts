@@ -60,6 +60,47 @@ export interface SettingsUpdateBody {
   personal_instruction?: string;
 }
 
+// --- 토큰 사용량 ---
+
+export type UsagePeriod = "today" | "week" | "month" | "year";
+
+export interface UsageQuota {
+  limit: number;
+  used: number;
+  remaining: number;
+  percent: number;
+  cycle_start: string;
+  cycle_end: string;
+  days_left: number;
+}
+
+export interface UsageChartPoint {
+  label: string;
+  full_label: string;
+  input: number;
+  output: number;
+}
+
+export interface UsageByModel {
+  model: string;
+  calls: number;
+  input: number;
+  output: number;
+  total: number;
+}
+
+export interface UsageStats {
+  period: UsagePeriod;
+  range_label: string;
+  summary: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
+  chart: UsageChartPoint[];
+  by_model: UsageByModel[];
+}
+
 export type StreamEvent =
   | { type: "meta"; model: string; category: string | null; complexity: number | null }
   | { type: "chunk"; content: string }

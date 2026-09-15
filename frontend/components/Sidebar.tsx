@@ -85,6 +85,16 @@ function ArrowDownToLineIcon() {
   );
 }
 
+function BarChartIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
+      <line x1="5" y1="20" x2="5" y2="10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <line x1="12" y1="20" x2="12" y2="4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <line x1="19" y1="20" x2="19" y2="14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 // 라이트/다크 모드에 맞춰 사이드바 톤도 같이 바뀐다 (라이트: 옅은 회색, 다크: 예전과 동일한 짙은 회색).
 // collapsed일 땐 아이콘만 남은 얇은 레일로 줄어들고, 이때는 앱 아이콘 자체가
 // 펼치기 버튼을 겸한다(따로 접기 아이콘을 안 둠).
@@ -104,6 +114,7 @@ export default function Sidebar({
   onDelete,
   onOpenPersonalInstruction,
   onOpenImportMemory,
+  onOpenUsage,
 }: {
   conversations: Conversation[];
   activeId: string | null;
@@ -115,6 +126,7 @@ export default function Sidebar({
   onDelete: (id: string) => void;
   onOpenPersonalInstruction: () => void;
   onOpenImportMemory: () => void;
+  onOpenUsage: () => void;
 }) {
   // 접힘: collapsed가 true 되는 즉시 글자를 감춰서(펼침 텍스트가 먼저 사라지고
   // 나서 박스가 줄어드는 것처럼) 매끄럽게 보인다.
@@ -339,6 +351,17 @@ export default function Sidebar({
             >
               <ArrowDownToLineIcon />
               다른 AI에서 가져오기
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                onOpenUsage();
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+              <BarChartIcon />
+              토큰 사용량
             </button>
           </div>,
           document.body

@@ -14,6 +14,8 @@ import EmptyState from "@/components/EmptyState";
 import Sidebar from "@/components/Sidebar";
 import SettingsModal from "@/components/SettingsModal";
 import ImportMemoryModal from "@/components/ImportMemoryModal";
+import UsageStatsModal from "@/components/UsageStatsModal";
+import UsageRing from "@/components/UsageRing";
 import MemoryUpdateButton from "@/components/MemoryUpdateButton";
 import {
   createConversation,
@@ -41,12 +43,17 @@ export default function Home() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [activeSettingsModal, setActiveSettingsModal] = useState<"personal" | "import" | null>(
-    null
-  );
+  const [activeSettingsModal, setActiveSettingsModal] = useState<
+    "personal" | "import" | "usage" | null
+  >(null);
 
   const isStreaming = phase !== "idle";
   const bottomRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  // 스트리밍 중 새 청크가 올 때마다 무조건 맨 아래로 스크롤하면, 사용자가
+  // 위로 스크롤해서 이전 내용을 보려 해도 계속 아래로 끌려 내려간다. 그래서
+  // "사용자가 지금 맨 아래 근처에 있을 때만" 자동 스크롤하도록 추적한다.
+  const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // e.nativeEvent.isComposing 하나만으로는 브라우저별로 놓치는 경우가 있어서,
   // onCompositionStart/End로 직접 추적하는 걸 같이 둔다 (표준적인 이중 방어).
@@ -77,8 +84,17 @@ export default function Home() {
   }
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages, phase]);
+
+  function handleMainScroll() {
+    const el = mainRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 80;
+  }
 
   // 입력창 자동 높이 조절 (Shift+Enter 줄바꿈 시 늘어나도록)
   useEffect(() => {
@@ -98,12 +114,14 @@ export default function Home() {
 
   function handleNewChat() {
     if (isStreaming) return;
+    stickToBottomRef.current = true;
     setActiveId(null);
     setMessages([]);
   }
 
   async function handleSelectConversation(id: string) {
     if (isStreaming || id === activeId) return;
+    stickToBottomRef.current = true;
     setActiveId(id);
     try {
       const dbMessages = await getConversationMessages(id);
@@ -165,6 +183,9 @@ export default function Home() {
         return;
       }
     }
+
+    // 새 메시지를 보낼 땐 이전에 위로 스크롤해뒀었더라도 다시 아래로 따라가게 한다.
+    stickToBottomRef.current = true;
 
     const userMsg: ChatMessage = {
       id: nextId(),
@@ -265,6 +286,7 @@ export default function Home() {
         onDelete={handleDeleteConversation}
         onOpenPersonalInstruction={() => setActiveSettingsModal("personal")}
         onOpenImportMemory={() => setActiveSettingsModal("import")}
+        onOpenUsage={() => setActiveSettingsModal("usage")}
       />
 
       {activeSettingsModal === "personal" && (
@@ -272,6 +294,9 @@ export default function Home() {
       )}
       {activeSettingsModal === "import" && (
         <ImportMemoryModal onClose={() => setActiveSettingsModal(null)} />
+      )}
+      {activeSettingsModal === "usage" && (
+        <UsageStatsModal onClose={() => setActiveSettingsModal(null)} />
       )}
 
       <MemoryUpdateButton />
@@ -281,7 +306,7 @@ export default function Home() {
           <ThemeToggle />
         </header>
 
-        <main className="flex-1 overflow-y-auto">
+        <main ref={mainRef} onScroll={handleMainScroll} className="flex-1 overflow-y-auto">
           <div className="mx-auto flex max-w-2xl flex-col gap-5 px-4 py-6">
             {messages.length === 0 && phase === "idle" && (
               <EmptyState onPick={(text) => setInput(text)} />
@@ -311,10 +336,12 @@ export default function Home() {
 
         <div className="border-t border-gray-100 bg-white px-4 py-4 dark:border-gray-800 dark:bg-gray-950">
           <div className="mx-auto flex max-w-2xl items-end gap-2 rounded-3xl border border-gray-300 bg-white px-2 py-1.5 shadow-sm focus-within:border-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:focus-within:border-gray-500">
+            <UsageRing />
+
             <textarea
               ref={textareaRef}
               rows={1}
-              className="max-h-40 flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
+              className="max-h-40 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2 text-sm text-gray-900 outline-none placeholder:overflow-hidden placeholder:whitespace-nowrap placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
               placeholder="메시지를 입력하세요... (Shift+Enter로 줄바꿈)"
               value={input}
               onChange={(e) => setInput(e.target.value)}

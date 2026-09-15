@@ -11,3 +11,7 @@ numpy==1.26.4
 sqlalchemy==2.0.36
 asyncpg==0.30.0
 tiktoken==0.8.0
+
+# 토큰 사용량 집계 (Asia/Seoul 기준 시간대 변환) - slim 이미지엔 시스템 tzdata가
+# 없을 수 있어 zoneinfo가 여기서 대신 읽도록 명시적으로 설치
+tzdata==2025.2

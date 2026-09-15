@@ -6,6 +6,9 @@ import {
   SendMessageBody,
   Settings,
   SettingsUpdateBody,
+  UsagePeriod,
+  UsageQuota,
+  UsageStats,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -127,6 +130,20 @@ export async function deleteImportedMemory(): Promise<{ imported_memory: string 
 export async function extractMemoryAll(): Promise<{ status: string; count: number }> {
   const res = await fetch(`${API_URL}/memory/extract-all`, { method: "POST" });
   if (!res.ok) throw new Error(`메모리 업데이트에 실패했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+// --- 토큰 사용량 ---
+
+export async function getUsageQuota(): Promise<UsageQuota> {
+  const res = await fetch(`${API_URL}/usage/quota`);
+  if (!res.ok) throw new Error(`토큰 사용량을 불러오지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function getUsageStats(period: UsagePeriod): Promise<UsageStats> {
+  const res = await fetch(`${API_URL}/usage/stats?period=${period}`);
+  if (!res.ok) throw new Error(`사용량 통계를 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 

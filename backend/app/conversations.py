@@ -202,7 +202,14 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 }
             )
 
-            # 3) 사용자 메시지 저장
+            # 3) 슬라이딩 윈도우로 이전 대화 이력 구성 - _build_history는 "이번
+            #    질문은 아직 DB에 없다"는 전제로 마지막에 new_query를 직접 붙이므로,
+            #    반드시 이번 사용자 메시지를 저장하기 *전에* 호출해야 한다
+            #    (순서가 바뀌면 방금 커밋된 메시지가 조회 결과에도 잡히고 new_query로도
+            #    또 붙어서, 모델에게 같은 사용자 메시지가 두 번 들어가는 버그가 생긴다).
+            history = await _build_history(session, conversation_id, body.content)
+
+            # 4) 사용자 메시지 저장
             user_tokens = count_tokens(body.content)
             session.add(
                 Message(
@@ -218,9 +225,6 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 .values(updated_at=datetime.now(timezone.utc))
             )
             await session.commit()
-
-            # 4) 슬라이딩 윈도우로 이전 대화 이력 구성
-            history = await _build_history(session, conversation_id, body.content)
 
             system_parts = []
             if personal_instruction and personal_instruction.strip():
@@ -245,11 +249,22 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
 
             # 5) LLM 스트리밍 호출
             full_response = ""
+            usage: dict[str, int] = {}
             try:
-                async for chunk in providers.stream_model(spec, history):
+                async for chunk in providers.stream_model(spec, history, usage):
                     full_response += chunk
                     yield _sse({"type": "chunk", "content": chunk})
             except Exception as exc:  # noqa: BLE001
+                # 실패한 턴은 assistant 메시지를 저장하지 않고 그냥 끝나기 때문에,
+                # 나중에 DB만 봐서는 왜 응답이 없는지 알 수 없다 - 여기서 로그로
+                # 남겨야 원인(타임아웃/401/429 등)을 사후에 확인할 수 있다.
+                logger.error(
+                    "모델 호출 실패 (conversation_id=%s, model=%s): %s",
+                    conversation_id,
+                    spec.display_name,
+                    exc,
+                    exc_info=True,
+                )
                 yield _sse({"type": "error", "message": f"모델 호출 실패: {exc}"})
                 return
 
@@ -257,7 +272,14 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             yield _sse({"type": "done"})
 
             # 7) 완성된 응답 저장 (중간 저장 없이 끝난 뒤 한 번에)
-            input_tokens = sum(count_tokens(m["content"]) for m in history)
+            # 토큰 사용량은 공급사가 응답에 실어 보내는 실제 값을 우선 쓰고,
+            # (드물게) 응답에 안 실려 왔을 때만 tiktoken 근사치로 대체한다.
+            input_tokens = usage.get("input_tokens")
+            if input_tokens is None:
+                input_tokens = sum(count_tokens(m["content"]) for m in history)
+            output_tokens = usage.get("output_tokens")
+            if output_tokens is None:
+                output_tokens = count_tokens(full_response)
             session.add(
                 Message(
                     conversation_id=conversation_id,
@@ -267,7 +289,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     task_category=task_category,
                     complexity_score=complexity_score,
                     input_tokens=input_tokens,
-                    output_tokens=count_tokens(full_response),
+                    output_tokens=output_tokens,
                 )
             )
             await session.execute(
