@@ -47,7 +47,7 @@ Four mechanisms decide what the model "remembers" and where that carries over to
 | Context retention | Within a chat room | Automatic | Keeps referring back to prior questions/answers within the same chat room | Sliding window |
 | Auto memory extraction | Across chat rooms | Automatic | Remembers key facts (preferences, job, etc.) even when you switch or open a new chat room | Memory formation |
 | Personal instructions | Across chat rooms | Manual | Write a self-intro and preferred reply style once; applied to every chat room | System prompt injection |
-| Import from other AI | Across chat rooms | Manual | Extracts context from another AI platform via a dedicated prompt and carries it into NPIA | Memory import |
+| Import from other AI | Across chat rooms | Manual | Extracts context from another AI platform via a dedicated prompt and carries it into replies here | Memory import |
 
 When two or more of these disagree on the same fact, personal instructions win, then imported memory, then auto-extracted memory (see [conversations.py](backend/app/conversations.py)).
 

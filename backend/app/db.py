@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "postgresql+asyncpg://npia:npia@postgres:5432/npia"
+    "DATABASE_URL", "postgresql+asyncpg://asap:asap@postgres:5432/asap"
 )
 
 engine = create_async_engine(DATABASE_URL, echo=False)

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NPIA(Navigating Productivity with Intelligent Assistant)",
+  title: "ASAP",
   description: "질문의 카테고리와 복잡도를 분석해 9개 모델 중 하나로 자동 라우팅하는 데모",
 };
 

@@ -12,7 +12,7 @@ export default function EmptyState({
 }) {
   return (
     <div className="mt-16 flex flex-col items-center text-center">
-      <img src="/icons/npia.png" alt="" className="mb-3 h-12 w-auto" />
+      <img src="/icons/asap.png" alt="" className="mb-3 h-12 w-auto" />
       <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
         Navigating Productivity with Intelligent Assistance
       </p>

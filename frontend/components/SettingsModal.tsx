@@ -90,7 +90,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">
-          NPIA가 나에 대해 알아야 할 것과 원하는 답변 방식을 알려주세요
+          ASAP가 나에 대해 알아야 할 것과 원하는 답변 방식을 알려주세요
         </p>
 
         <textarea

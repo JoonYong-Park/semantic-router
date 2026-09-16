@@ -3,15 +3,15 @@ services:
     image: postgres:16-alpine
     container_name: postgres
     environment:
-      POSTGRES_USER: npia
-      POSTGRES_PASSWORD: npia
-      POSTGRES_DB: npia
+      POSTGRES_USER: asap
+      POSTGRES_PASSWORD: asap
+      POSTGRES_DB: asap
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U npia"]
+      test: ["CMD-SHELL", "pg_isready -U asap"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -25,7 +25,7 @@ services:
       - .env
     environment:
       FRONTEND_ORIGIN: http://${SERVER_IP}:3000
-      DATABASE_URL: postgresql+asyncpg://npia:npia@postgres:5432/npia
+      DATABASE_URL: postgresql+asyncpg://asap:asap@postgres:5432/asap
     volumes:
       - backend_hf_cache:/app/hf-cache
     depends_on:

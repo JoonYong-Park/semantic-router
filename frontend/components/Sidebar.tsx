@@ -199,17 +199,17 @@ export default function Sidebar({
             aria-label="사이드바 펼치기"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg hover:bg-gray-200 dark:hover:bg-gray-800"
           >
-            <img src="/icons/npia.png" alt="NPIA" className="h-6 w-6 object-contain" />
+            <img src="/icons/asap.png" alt="ASAP" className="h-6 w-6 object-contain" />
           </button>
         ) : (
           <div className="flex h-9 w-9 shrink-0 items-center justify-center">
-            <img src="/icons/npia.png" alt="" className="h-6 w-6 object-contain" />
+            <img src="/icons/asap.png" alt="" className="h-6 w-6 object-contain" />
           </div>
         )}
         {showFull && (
           <>
             <span className="flex-1 truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
-              NPIA
+              ASAP
             </span>
             <button
               type="button"

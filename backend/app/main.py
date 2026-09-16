@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="NPIA - Category/Complexity Routing", lifespan=lifespan)
+app = FastAPI(title="ASAP - Category/Complexity Routing", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
