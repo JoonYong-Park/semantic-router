@@ -14,10 +14,10 @@ export default function EmptyState({
     <div className="mt-16 flex flex-col items-center text-center">
       <img src="/icons/asap.png" alt="" className="mb-3 h-12 w-auto" />
       <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
-        Navigating Productivity with Intelligent Assistance
+        All-in-one Service AI Platform for You
       </p>
       <p className="mt-1.5 text-base font-medium text-gray-700 dark:text-gray-200">
-        지능형 AI 비서와 함께하는 생산성 극대화
+        모든 업무를 하나로, AI 통합 플랫폼 ASAP
       </p>
 
       <p className="mt-4 text-sm text-gray-400 dark:text-gray-500">
