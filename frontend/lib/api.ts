@@ -3,6 +3,7 @@ import {
   ChatResponseBody,
   Conversation,
   DBMessage,
+  SearchResult,
   SendMessageBody,
   Settings,
   SettingsUpdateBody,
@@ -144,6 +145,14 @@ export async function getUsageQuota(): Promise<UsageQuota> {
 export async function getUsageStats(period: UsagePeriod): Promise<UsageStats> {
   const res = await fetch(`${API_URL}/usage/stats?period=${period}`);
   if (!res.ok) throw new Error(`사용량 통계를 불러오지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+// --- 대화 검색 ---
+
+export async function searchConversations(query: string): Promise<SearchResult[]> {
+  const res = await fetch(`${API_URL}/search?query=${encodeURIComponent(query)}`);
+  if (!res.ok) throw new Error(`검색에 실패했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 

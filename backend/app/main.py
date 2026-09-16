@@ -14,6 +14,7 @@ from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.providers import call_model
 from app.router import select_model
 from app.schemas import ChatRequest, ChatResponse
+from app.search import router as search_router
 from app.settings import router as settings_router
 from app.usage import router as usage_router
 
@@ -61,6 +62,7 @@ app.include_router(conversations_router)
 app.include_router(settings_router)
 app.include_router(memory_router)
 app.include_router(usage_router)
+app.include_router(search_router)
 
 
 def _auto_mode_ready() -> bool:

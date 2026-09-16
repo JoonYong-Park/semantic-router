@@ -115,6 +115,7 @@ export default function Sidebar({
   onOpenPersonalInstruction,
   onOpenImportMemory,
   onOpenUsage,
+  onOpenSearch,
 }: {
   conversations: Conversation[];
   activeId: string | null;
@@ -127,6 +128,7 @@ export default function Sidebar({
   onOpenPersonalInstruction: () => void;
   onOpenImportMemory: () => void;
   onOpenUsage: () => void;
+  onOpenSearch: () => void;
 }) {
   // 접힘: collapsed가 true 되는 즉시 글자를 감춰서(펼침 텍스트가 먼저 사라지고
   // 나서 박스가 줄어드는 것처럼) 매끄럽게 보인다.
@@ -239,9 +241,10 @@ export default function Sidebar({
         </button>
         <button
           type="button"
-          title="채팅 검색 (준비 중)"
-          aria-label="채팅 검색 (준비 중)"
-          className={`flex h-9 shrink-0 cursor-default items-center gap-2 rounded-lg text-sm text-gray-400 dark:text-gray-500 ${
+          onClick={onOpenSearch}
+          title="채팅 검색"
+          aria-label="채팅 검색"
+          className={`flex h-9 shrink-0 items-center gap-2 rounded-lg text-sm text-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800 ${
             collapsed ? "w-9" : "w-full"
           }`}
         >

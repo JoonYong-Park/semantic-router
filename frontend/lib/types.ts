@@ -101,6 +101,15 @@ export interface UsageStats {
   by_model: UsageByModel[];
 }
 
+// --- 대화 검색 ---
+
+export interface SearchResult {
+  conversation_id: string;
+  title: string | null;
+  snippet: string;
+  matched_role: "user" | "assistant";
+}
+
 export type StreamEvent =
   | { type: "meta"; model: string; category: string | null; complexity: number | null }
   | { type: "chunk"; content: string }

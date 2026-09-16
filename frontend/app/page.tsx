@@ -16,6 +16,7 @@ import SettingsModal from "@/components/SettingsModal";
 import ImportMemoryModal from "@/components/ImportMemoryModal";
 import UsageStatsModal from "@/components/UsageStatsModal";
 import UsageRing from "@/components/UsageRing";
+import SearchModal from "@/components/SearchModal";
 import MemoryUpdateButton from "@/components/MemoryUpdateButton";
 import {
   createConversation,
@@ -44,7 +45,7 @@ export default function Home() {
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeSettingsModal, setActiveSettingsModal] = useState<
-    "personal" | "import" | "usage" | null
+    "personal" | "import" | "usage" | "search" | null
   >(null);
 
   const isStreaming = phase !== "idle";
@@ -287,6 +288,7 @@ export default function Home() {
         onOpenPersonalInstruction={() => setActiveSettingsModal("personal")}
         onOpenImportMemory={() => setActiveSettingsModal("import")}
         onOpenUsage={() => setActiveSettingsModal("usage")}
+        onOpenSearch={() => setActiveSettingsModal("search")}
       />
 
       {activeSettingsModal === "personal" && (
@@ -297,6 +299,15 @@ export default function Home() {
       )}
       {activeSettingsModal === "usage" && (
         <UsageStatsModal onClose={() => setActiveSettingsModal(null)} />
+      )}
+      {activeSettingsModal === "search" && (
+        <SearchModal
+          onClose={() => setActiveSettingsModal(null)}
+          onSelectConversation={(id) => {
+            setActiveSettingsModal(null);
+            handleSelectConversation(id);
+          }}
+        />
       )}
 
       <MemoryUpdateButton />

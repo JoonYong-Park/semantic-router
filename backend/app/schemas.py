@@ -113,3 +113,13 @@ class UsageStatsOut(BaseModel):
     summary: UsageSummaryOut
     chart: list[UsageChartPoint]
     by_model: list[UsageByModelOut]
+
+
+# --- 대화 검색 ---
+
+
+class SearchResultOut(BaseModel):
+    conversation_id: UUID
+    title: Optional[str] = None
+    snippet: str
+    matched_role: str
