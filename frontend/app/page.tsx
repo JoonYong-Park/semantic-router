@@ -219,10 +219,19 @@ export default function Home() {
             },
           ]);
         },
+        onSearching: (query) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, searchingQuery: query } : m
+            )
+          );
+        },
         onChunk: (chunk) => {
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantId ? { ...m, content: m.content + chunk } : m
+              m.id === assistantId
+                ? { ...m, content: m.content + chunk, searchingQuery: null }
+                : m
             )
           );
         },

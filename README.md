@@ -53,17 +53,33 @@ When two or more of these disagree on the same fact, personal instructions win, 
 
 ## Run
 
+There are two compose files — pick the one matching where you're running this:
+
+- **`docker-compose.dev.yml`** — local development. CORS/API URL are hardcoded to `localhost`.
+- **`docker-compose.yml`** — on-premise/server deploy. Uses `SERVER_IP` from `.env` for CORS/API URL; without it, requests silently fail with a CORS error.
+
+### Local development
+
 ```bash
 cp .env.example .env
-# Fill in OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY
 
-docker compose up -d --build
+docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-- Frontend: http://localhost:3000
-- Backend: http://localhost:8000/health
+### On-premise / server deploy
+
+```bash
+cp .env.example .env
+
+docker compose up -d --build   # uses docker-compose.yml
+```
+
+- Frontend: http://localhost:3000 (or `http://$SERVER_IP:3000` on a server)
+- Backend: http://localhost:8000/health (or `http://$SERVER_IP:8000/health`)
 
 On first start, classifier models are downloaded from Hugging Face and cached in the `backend_hf_cache` volume. Manual model selection works before the classifiers finish loading.
+
+The commands below all default to `docker-compose.yml` — for local dev, add `-f docker-compose.dev.yml` to each:
 
 ```bash
 # Status / logs

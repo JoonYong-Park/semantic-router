@@ -23,6 +23,7 @@ export interface ChatMessage {
   taskCategory?: string | null;
   complexityScore?: number | null;
   isError?: boolean;
+  searchingQuery?: string | null; // 웹 검색 중일 때만 값이 있고, 첫 chunk가 오면 비움
 }
 
 // --- 채팅방(대화방) ---
@@ -112,6 +113,7 @@ export interface SearchResult {
 
 export type StreamEvent =
   | { type: "meta"; model: string; category: string | null; complexity: number | null }
+  | { type: "searching"; query: string }
   | { type: "chunk"; content: string }
   | { type: "done" }
   | { type: "error"; message: string };

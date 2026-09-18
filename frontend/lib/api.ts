@@ -167,6 +167,7 @@ export async function streamMessage(
   body: SendMessageBody,
   handlers: {
     onMeta: (meta: { model: string; category: string | null; complexity: number | null }) => void;
+    onSearching: (query: string) => void;
     onChunk: (content: string) => void;
     onDone: () => void;
     onError: (message: string) => void;
@@ -222,6 +223,8 @@ export async function streamMessage(
           category: (data.category as string | null) ?? null,
           complexity: (data.complexity as number | null) ?? null,
         });
+      } else if (data.type === "searching") {
+        handlers.onSearching(data.query as string);
       } else if (data.type === "chunk") {
         handlers.onChunk(data.content as string);
       } else if (data.type === "done") {

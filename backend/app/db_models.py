@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -71,6 +72,11 @@ class Message(Base):
     complexity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 이번 턴에서 웹 검색 tool을 실제로 썼는지, 어떤 질의로 검색했는지.
+    web_search_used: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=False
+    )
+    web_search_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -247,13 +247,67 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     {"role": "system", "content": "\n\n".join(system_parts)}
                 ] + history
 
-            # 5) LLM 스트리밍 호출
+            # 5) 1차 호출 - 라우팅된 spec 모델 자신이 웹 검색 필요 여부를 판단한다
+            # (ChatGPT/Claude가 실제로 쓰는 방식과 동일 - 판단 전용 별도 모델 없음).
+            # 비스트리밍으로 tools를 실어 보내고, 결과에 따라 갈린다:
+            #   - 도구 호출 없이 바로 텍스트 → 이미 완성된 답이므로 재호출 없이
+            #     그 텍스트를 그대로 하나의 chunk로 스트리밍 형태만 맞춰 전달.
+            #   - 검색 요청 → Tavily로 검색 → 결과를 history에 얹어 같은 spec으로
+            #     2차 호출(이번엔 stream_model()로 실제 스트리밍).
             full_response = ""
             usage: dict[str, int] = {}
+            web_search_used = False
+            web_search_query: str | None = None
             try:
-                async for chunk in providers.stream_model(spec, history, usage):
-                    full_response += chunk
-                    yield _sse({"type": "chunk", "content": chunk})
+                tool_result = await providers.call_model_with_tools(spec, history)
+
+                if tool_result.wants_search and tool_result.search_query:
+                    web_search_used = True
+                    web_search_query = tool_result.search_query
+                    yield _sse({"type": "searching", "query": tool_result.search_query})
+
+                    search_results = await providers.tavily_search(
+                        tool_result.search_query,
+                        max_results=5,
+                        time_range=tool_result.time_range,
+                        site_hint=tool_result.site_hint,
+                    )
+                    # 검색 실패(빈 결과)해도 에러 내지 않고 그냥 검색 결과 없이 계속 진행.
+                    if search_results:
+                        results_text = "\n\n".join(
+                            f"[{i + 1}] {r.get('title', '')}\n{r.get('url', '')}\n"
+                            f"{r.get('content', '')[:500]}"
+                            for i, r in enumerate(search_results)
+                        )
+                        history = history + [
+                            {
+                                "role": "system",
+                                "content": (
+                                    f"[웹 검색 결과: {tool_result.search_query}]\n{results_text}\n\n"
+                                    "위 검색 결과를 참고해서 답변해. 답변 마지막에 실제로 "
+                                    "참고한 출처만 아래 형식으로 표시해 (참고 안 한 결과는 빼고, "
+                                    "위 검색 결과에 없는 URL은 지어내지 마):\n"
+                                    "---\n출처:\n- [번호] 제목 (URL)"
+                                ),
+                            }
+                        ]
+
+                    async for chunk in providers.stream_model(spec, history, usage):
+                        full_response += chunk
+                        yield _sse({"type": "chunk", "content": chunk})
+
+                    # 이번 턴은 API 호출이 두 번(판단 호출 + 검색 후 답변 호출)이라,
+                    # 실제 청구 토큰도 둘을 합쳐야 이번 턴의 진짜 사용량이 된다.
+                    usage["input_tokens"] = (usage.get("input_tokens") or 0) + (
+                        tool_result.usage.get("input_tokens") or 0
+                    )
+                    usage["output_tokens"] = (usage.get("output_tokens") or 0) + (
+                        tool_result.usage.get("output_tokens") or 0
+                    )
+                else:
+                    full_response = tool_result.direct_text or ""
+                    yield _sse({"type": "chunk", "content": full_response})
+                    usage = dict(tool_result.usage)
             except Exception as exc:  # noqa: BLE001
                 # 실패한 턴은 assistant 메시지를 저장하지 않고 그냥 끝나기 때문에,
                 # 나중에 DB만 봐서는 왜 응답이 없는지 알 수 없다 - 여기서 로그로
@@ -290,6 +344,8 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     complexity_score=complexity_score,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    web_search_used=web_search_used,
+                    web_search_query=web_search_query,
                 )
             )
             await session.execute(

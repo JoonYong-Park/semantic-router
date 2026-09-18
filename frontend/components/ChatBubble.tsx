@@ -47,7 +47,9 @@ export default function ChatBubble({
         {isStreaming && (
           <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-gray-400 dark:bg-gray-500" />
-            응답 생성 중...
+            {message.searchingQuery
+              ? `웹 검색 중: ${message.searchingQuery}`
+              : "응답 생성 중..."}
           </div>
         )}
       </div>
