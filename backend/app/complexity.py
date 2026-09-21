@@ -7,7 +7,7 @@ from transformers import AutoModel, AutoTokenizer
 
 from app.complexity_examples import EASY_EXAMPLES, HARD_EXAMPLES
 
-MODEL_NAME = "intfloat/multilingual-e5-small"
+MODEL_NAME = "intfloat/multilingual-e5-large"
 
 _tokenizer = None
 _model = None
