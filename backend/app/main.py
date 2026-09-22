@@ -71,8 +71,6 @@ def _auto_mode_ready() -> bool:
 
 @app.get("/health")
 async def health() -> dict:
-    # TEMP: force failure to test CI/CD rollback, revert after verifying
-    raise HTTPException(status_code=500, detail="forced failure for rollback test")
     return {
         "status": "ok",
         "category_classifier_ready": classifier.is_ready(),
