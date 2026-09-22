@@ -1,0 +1,66 @@
+name: Deploy (self-hosted)
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Run deployment (backup -> build -> up -> healthcheck -> rollback)
+        id: deploy
+        run: |
+          set +e
+          chmod +x scripts/deploy.sh scripts/healthcheck.sh
+          bash scripts/deploy.sh
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Write deployment summary
+        if: always()
+        run: |
+          code="${{ steps.deploy.outputs.exit_code }}"
+          {
+            echo "## Deployment Result"
+            echo ""
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Run time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+            echo ""
+            case "$code" in
+              0)
+                echo "**Deploy succeeded** - the new version started up and passed the health check."
+                ;;
+              1)
+                echo "**Deploy failed, automatic rollback succeeded** - the new version failed to start or failed the health check, so it was rolled back to the previous image (:previous)."
+                echo ""
+                echo "> This rollback reverts the running container image, not the source code. The main branch commit history is unchanged. Investigate the offending commit and push a fix."
+                ;;
+              2)
+                echo "**Deploy failed, rollback also failed (manual intervention required)**"
+                echo ""
+                echo "> Log into the self-hosted runner server and check status with \`docker ps\` and \`docker compose logs\`, then recover manually."
+                ;;
+              *)
+                echo "Unknown exit code: \`$code\`"
+                ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail job if deployment did not fully succeed
+        if: steps.deploy.outputs.exit_code != '0'
+        run: |
+          echo "deploy.sh exit code: ${{ steps.deploy.outputs.exit_code }}"
+          exit 1
