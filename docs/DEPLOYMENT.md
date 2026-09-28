@@ -47,6 +47,27 @@ runner server directly:
   `docker compose -p semantic-router logs`, `docker image ls | grep semantic-router`,
   and restart the previous image manually or investigate further as needed.
 
+## Chat attachment storage and the deploy pipeline
+
+`docker-compose.yml`'s `backend` service bind-mounts a host directory (path
+set via `UPLOAD_HOST_DIR` in `.env`, kept out of the repo since it's host-specific)
+to `/app/uploads` (container) for chat file attachments. This does not
+interact with `scripts/deploy.sh`'s backup/rollback logic:
+
+- The script only tags/restores the **built images** (`semantic-router-backend`,
+  `semantic-router-frontend`) as `:previous` — it never touches volumes or
+  bind mounts.
+- `UPLOAD_HOST_DIR` points at a plain host directory, not a Docker-managed named
+  volume (unlike `backend_hf_cache`/`postgres_data`). It exists independently
+  of any container lifecycle, so both a normal redeploy and an automatic
+  rollback mount the exact same host path — uploaded files are unaffected
+  either way.
+- The directory is created automatically (by Docker on first `up`, or by the
+  app itself via `Path.mkdir(parents=True, exist_ok=True)`) if it doesn't
+  already exist on the runner, so no manual setup step is required before the
+  first deploy after this change, other than setting `UPLOAD_HOST_DIR` in the
+  runner's `.env`.
+
 ## Secrets handling
 
 - No secrets are hardcoded in the workflow file or the deployment scripts.

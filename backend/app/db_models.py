@@ -102,6 +102,52 @@ class UserSettings(Base):
     )
 
 
+class Attachment(Base):
+    """채팅 첨부파일. 업로드 시점(전송 전)에 이미 저장+텍스트 추출까지 끝내고,
+    message_id는 그 첨부를 참조한 메시지가 실제로 전송될 때만 채워진다
+    (전송 전 이탈 시 message_id가 NULL인 채로 남는 게 "고아 첨부" - 정리 배치가 처리).
+    """
+
+    __tablename__ = "attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    original_name: Mapped[str] = mapped_column(Text, nullable=False)
+    stored_path: Mapped[str] = mapped_column(Text, nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(150), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 텍스트 추출형(txt/md/csv/xlsx/docx/pptx/hwp)만 채워짐 - JSON 문자열로
+    # [{"type":"text","text":...}, {"type":"image","path":...,"mime_type":...}]
+    # 순서 보존 블록 목록을 담는다. PDF/IMG는 원본을 그대로 비전에 태우므로 NULL.
+    extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "pending" | "done" | "failed" - 프로젝트 컨벤션상 다른 status성 컬럼도
+    # 네이티브 enum이 아니라 String로 두므로 그대로 따른다.
+    extraction_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_attachments_chat_id", "chat_id"),
+        Index("ix_attachments_message_id", "message_id"),
+        # 고아 첨부(message_id IS NULL) 정리 배치가 created_at으로 스캔하므로.
+        Index("ix_attachments_orphan_created", "message_id", "created_at"),
+    )
+
+
 class UserMemory(Base):
     """자동 메모리 추출로 쌓인 사실 한 줄 = row 하나.
     개인 지침/가져온 메모리(UserSettings)와 달리 여러 줄이라 별도 테이블로 둔다.

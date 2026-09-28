@@ -28,6 +28,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://asap:asap@postgres:5432/asap
     volumes:
       - backend_hf_cache:/app/hf-cache
+      - ./uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy

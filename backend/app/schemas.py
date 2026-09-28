@@ -32,6 +32,20 @@ class ConversationOut(BaseModel):
     updated_at: datetime
 
 
+# --- 첨부파일 ---
+
+
+class AttachmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    original_name: str
+    mime_type: str
+    size_bytes: int
+    extraction_status: str
+    created_at: datetime
+
+
 class MessageOut(BaseModel):
     # model_used가 Pydantic의 "model_" 예약 네임스페이스와 겹쳐서 나는 경고를 끈다.
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
@@ -43,12 +57,17 @@ class MessageOut(BaseModel):
     task_category: Optional[str] = None
     complexity_score: Optional[float] = None
     created_at: datetime
+    # 이 메시지에 첨부된 파일 목록 - 전송 후에도 채팅 화면에 "무엇을 첨부했는지"
+    # 계속 보여주기 위해 필요. Message ORM에는 관계(relationship)를 안 걸어뒀으므로
+    # (다른 모델들과 동일한 컨벤션) get_messages()에서 수동으로 채워서 넘긴다.
+    attachments: list[AttachmentOut] = []
 
 
 class MessageCreate(BaseModel):
     content: str
     mode: Mode
     size: Optional[Size] = None
+    attachment_ids: list[UUID] = []
 
 
 # --- 개인 지침(personal instruction) 설정용 ---

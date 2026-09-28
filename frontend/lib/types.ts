@@ -24,6 +24,8 @@ export interface ChatMessage {
   complexityScore?: number | null;
   isError?: boolean;
   searchingQuery?: string | null; // 웹 검색 중일 때만 값이 있고, 첫 chunk가 오면 비움
+  processingMessage?: string | null; // 첨부파일 백그라운드 처리 대기 중일 때만 값이 있고, 첫 chunk가 오면 비움
+  attachments?: AttachmentOut[]; // 이 메시지에 첨부된 파일 - 전송 후에도 계속 표시
 }
 
 // --- 채팅방(대화방) ---
@@ -42,12 +44,35 @@ export interface DBMessage {
   task_category: string | null;
   complexity_score: number | null;
   created_at: string;
+  attachments: AttachmentOut[];
 }
 
 export interface SendMessageBody {
   content: string;
   mode: Mode;
   size?: Size;
+  attachment_ids?: string[];
+}
+
+// --- 첨부파일 ---
+
+export interface AttachmentOut {
+  id: string;
+  original_name: string;
+  mime_type: string;
+  size_bytes: number;
+  extraction_status: "pending" | "done" | "failed";
+  created_at: string;
+}
+
+export type AttachmentStatus = "uploading" | "ready" | "error";
+
+export interface PendingAttachment {
+  id: string; // 업로드 완료 전엔 로컬 임시 id, 완료 후 서버가 준 attachment_id로 교체
+  file: File;
+  status: AttachmentStatus;
+  progress?: number;
+  error?: string;
 }
 
 // --- 개인 지침(설정) ---
@@ -114,6 +139,7 @@ export interface SearchResult {
 export type StreamEvent =
   | { type: "meta"; model: string; category: string | null; complexity: number | null }
   | { type: "searching"; query: string }
+  | { type: "processing"; message: string }
   | { type: "chunk"; content: string }
   | { type: "done" }
   | { type: "error"; message: string };

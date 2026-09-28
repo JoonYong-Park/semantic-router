@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import classifier, complexity
+from app.attachments import orphan_cleanup_loop
+from app.attachments import router as attachments_router
 from app.conversations import router as conversations_router
 from app.db import init_db
 from app.memory import router as memory_router
@@ -45,8 +47,10 @@ async def lifespan(app: FastAPI):
     # 채팅방/메시지 테이블 준비 (데모 단계라 Alembic 대신 create_all)
     await init_db()
     task = asyncio.create_task(_load_models_background())
+    cleanup_task = asyncio.create_task(orphan_cleanup_loop())
     yield
     task.cancel()
+    cleanup_task.cancel()
 
 
 app = FastAPI(title="ASAP - Category/Complexity Routing", lifespan=lifespan)
@@ -59,6 +63,7 @@ app.add_middleware(
 )
 
 app.include_router(conversations_router)
+app.include_router(attachments_router)
 app.include_router(settings_router)
 app.include_router(memory_router)
 app.include_router(usage_router)

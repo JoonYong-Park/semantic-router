@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.db_models import DEMO_USER_ID, Conversation, Message
+from app.db_models import DEMO_USER_ID, Attachment, Conversation, Message
 from app.schemas import SearchResultOut
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -45,12 +45,16 @@ def _like_pattern(query: str) -> str:
     return f"%{escaped}%"
 
 
-def _snippet(content: str, query: str) -> str:
+def _snippet(content: str, query: str, attachment_name: str | None) -> str:
     """검색어가 실제로 나오는 위치 앞뒤로 잘라서 발췌한다. 트라이그램 유사도는
     부분 문자열이 아니어도 매칭될 수 있어서(오탈자 허용), 못 찾으면 그냥
-    본문 앞부분을 보여준다."""
+    본문 앞부분을 보여준다. content에 없고 첨부파일명에만 매칭된 경우는
+    그 파일명을 스니펫으로 보여준다 (첨부파일 extracted_text 자체는 검색
+    대상이 아니므로 여기서 다룰 필요 없음)."""
     idx = content.lower().find(query.lower())
     if idx == -1:
+        if attachment_name and query.lower() in attachment_name.lower():
+            return f"첨부파일: {attachment_name}"
         return content[:80] + ("..." if len(content) > 80 else "")
 
     start = max(0, idx - SNIPPET_CONTEXT_CHARS)
@@ -73,7 +77,10 @@ async def search_conversations(
 
     title_similarity = func.similarity(func.coalesce(Conversation.title, ""), query)
     content_similarity = func.similarity(Message.content, query)
-    relevance = func.greatest(title_similarity, content_similarity)
+    attachment_similarity = func.similarity(
+        func.coalesce(Attachment.original_name, ""), query
+    )
+    relevance = func.greatest(title_similarity, content_similarity, attachment_similarity)
 
     pattern = _like_pattern(query)
 
@@ -83,13 +90,17 @@ async def search_conversations(
             Conversation.title,
             Message.role,
             Message.content,
+            Attachment.original_name,
         )
         .select_from(Message)
         .join(Conversation, Message.conversation_id == Conversation.id)
+        # 첨부파일명으로도 검색되게 - extracted_text 본문은 스코프 밖이라 안 건드림.
+        .outerjoin(Attachment, Attachment.message_id == Message.id)
         .where(
             Conversation.user_id == DEMO_USER_ID,
             Message.content.ilike(pattern, escape="\\")
-            | Conversation.title.ilike(pattern, escape="\\"),
+            | Conversation.title.ilike(pattern, escape="\\")
+            | Attachment.original_name.ilike(pattern, escape="\\"),
         )
         .order_by(relevance.desc())
         .limit(MAX_RAW_MATCHES)
@@ -99,7 +110,7 @@ async def search_conversations(
     # 관련도 높은 메시지)만 남기면 "채팅방당 1건, 관련도순" 그룹핑이 된다.
     seen: set[UUID] = set()
     results: list[SearchResultOut] = []
-    for conv_id, title, role, content in result.all():
+    for conv_id, title, role, content, attachment_name in result.all():
         if conv_id in seen:
             continue
         seen.add(conv_id)
@@ -107,7 +118,7 @@ async def search_conversations(
             SearchResultOut(
                 conversation_id=conv_id,
                 title=title,
-                snippet=_snippet(content, query),
+                snippet=_snippet(content, query, attachment_name),
                 matched_role=role,
             )
         )

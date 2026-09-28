@@ -108,6 +108,115 @@ def build_tools_for_company(company: Company) -> list[dict]:
     ]
 
 
+# --- 첨부파일 멀티모달 content 어댑터 ---
+#
+# conversations.py가 만드는 내부 표현(provider 중립)은 문자열이거나, 아래
+# 블록들의 리스트다:
+#   {"type": "text", "text": str}
+#   {"type": "image", "media_type": str, "data": str(base64)}
+#   {"type": "document", "media_type": str, "data": str(base64)}  (PDF)
+# 이 함수들이 실제 요청 직전에 회사별 스키마로 변환한다.
+
+
+def _to_anthropic_content(content: str | list[dict]) -> str | list[dict]:
+    if isinstance(content, str):
+        return content
+    blocks = []
+    for block in content:
+        if block["type"] == "text":
+            blocks.append({"type": "text", "text": block["text"]})
+        else:  # image / document - Anthropic 둘 다 source 래퍼가 동일한 모양
+            blocks.append(
+                {
+                    "type": block["type"],
+                    "source": {
+                        "type": "base64",
+                        "media_type": block["media_type"],
+                        "data": block["data"],
+                    },
+                }
+            )
+    return blocks
+
+
+def _to_openai_content(content: str | list[dict]) -> str | list[dict]:
+    """OpenAI Chat Completions 포맷 (Google의 OpenAI 호환 엔드포인트도 동일하게 지원).
+    PDF는 이미지가 아니라 file 블록(file_data에 data URI)으로 보낸다 - OpenAI
+    Chat Completions가 실제로 지원하는 파일 입력 방식."""
+    if isinstance(content, str):
+        return content
+    blocks = []
+    for block in content:
+        if block["type"] == "text":
+            blocks.append({"type": "text", "text": block["text"]})
+        elif block["type"] == "image":
+            blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{block['media_type']};base64,{block['data']}"
+                    },
+                }
+            )
+        else:  # document (PDF)
+            blocks.append(
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": "attachment.pdf",
+                        "file_data": f"data:{block['media_type']};base64,{block['data']}",
+                    },
+                }
+            )
+    return blocks
+
+
+def _raise_for_status_logged(resp: httpx.Response) -> None:
+    """resp.raise_for_status()는 응답 본문을 버리고 상태 코드만 담은
+    메시지를 던져서, 4xx의 실제 원인(예: OpenAI의 구체적인 거부 사유)이
+    로그에 안 남는 문제가 있었다. 재발 방지를 위해 실패 시 본문을 먼저
+    로그로 남긴 뒤 그대로 raise한다."""
+    if resp.status_code >= 400:
+        logger.error("API 오류 응답 (%s): %s", resp.status_code, resp.text)
+    resp.raise_for_status()
+
+
+def _apply_anthropic_cache_control(anthropic_messages: list[dict]) -> None:
+    """대화 이력 중 "이번 턴"을 제외한 마지막 안정 지점(이전 턴)의 마지막
+    content block에 프롬프트 캐싱을 건다. 그 지점까지의 모든 이전 턴(특히
+    이미지가 포함된 과거 턴)이 캐시 대상이 되어, 다음 턴부터는 재계산 없이
+    캐시를 재사용한다. 새 질문(마지막 메시지)은 매번 바뀌므로 캐시 대상에서 뺀다."""
+    if len(anthropic_messages) < 2:
+        return
+    target = anthropic_messages[-2]
+    content = target["content"]
+    if isinstance(content, str):
+        target["content"] = [
+            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+        ]
+    elif isinstance(content, list) and content:
+        content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+
+
+def _prepare_anthropic_messages(messages: list[dict]) -> tuple[list[str], list[dict]]:
+    """system 텍스트 분리 + content 변환 + 캐싱까지 한 번에 처리."""
+    system_texts = [m["content"] for m in messages if m["role"] == "system"]
+    chat_messages = [
+        {"role": m["role"], "content": _to_anthropic_content(m["content"])}
+        for m in messages
+        if m["role"] != "system"
+    ]
+    _apply_anthropic_cache_control(chat_messages)
+    return system_texts, chat_messages
+
+
+def _prepare_openai_messages(messages: list[dict]) -> list[dict]:
+    return [
+        {"role": m["role"], "content": _to_openai_content(m["content"])}
+        for m in messages
+    ]
+
+
 @dataclass
 class ToolCallResult:
     """call_model_with_tools()의 회사별 응답을 통일한 내부 표현.
@@ -184,8 +293,7 @@ async def call_model_with_tools(
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         if spec.company == "anthropic":
             # stream_model()과 동일하게 system role은 최상위 파라미터로 분리.
-            system_texts = [m["content"] for m in messages if m["role"] == "system"]
-            chat_messages = [m for m in messages if m["role"] != "system"]
+            system_texts, chat_messages = _prepare_anthropic_messages(messages)
 
             payload: dict = {
                 "model": spec.model_id,
@@ -204,7 +312,7 @@ async def call_model_with_tools(
                 },
                 json=payload,
             )
-            resp.raise_for_status()
+            _raise_for_status_logged(resp)
             data = resp.json()
 
             raw_usage = data.get("usage", {})
@@ -239,7 +347,7 @@ async def call_model_with_tools(
         url = OPENAI_URL if spec.company == "openai" else GOOGLE_URL
         payload: dict = {
             "model": spec.model_id,
-            "messages": messages,
+            "messages": _prepare_openai_messages(messages),
             "tools": tools,
             "tool_choice": "auto",
         }
@@ -253,7 +361,7 @@ async def call_model_with_tools(
             headers={"Authorization": f"Bearer {api_key}"},
             json=payload,
         )
-        resp.raise_for_status()
+        _raise_for_status_logged(resp)
         data = resp.json()
 
         raw_usage = data.get("usage", {})
@@ -378,8 +486,7 @@ async def stream_model(
             # Anthropic Messages API는 messages 배열 안에 role="system"을 허용하지
             # 않고, 최상위 system 파라미터로 따로 받는다. 다른 두 회사는 system
             # role을 messages에 그대로 둬도 되는 OpenAI 호환 방식이라 그쪽은 안 건드림.
-            system_texts = [m["content"] for m in messages if m["role"] == "system"]
-            chat_messages = [m for m in messages if m["role"] != "system"]
+            system_texts, chat_messages = _prepare_anthropic_messages(messages)
 
             payload: dict = {
                 "model": spec.model_id,
@@ -404,7 +511,7 @@ async def stream_model(
                     resp_for_raise = httpx.Response(
                         resp.status_code, content=body, request=resp.request
                     )
-                    resp_for_raise.raise_for_status()
+                    _raise_for_status_logged(resp_for_raise)
 
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
@@ -441,7 +548,7 @@ async def stream_model(
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": spec.model_id,
-                "messages": messages,
+                "messages": _prepare_openai_messages(messages),
                 "stream": True,
                 "stream_options": {"include_usage": True},
             },
@@ -451,7 +558,7 @@ async def stream_model(
                 resp_for_raise = httpx.Response(
                     resp.status_code, content=body, request=resp.request
                 )
-                resp_for_raise.raise_for_status()
+                _raise_for_status_logged(resp_for_raise)
 
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):

@@ -36,6 +36,8 @@ Model IDs and routing maps live in [backend/app/models_config.py](backend/app/mo
 - **Token usage tracking** — a sidebar ring shows the current billing cycle's remaining tokens; a dedicated view breaks usage down by today/week/month/year and by model.
 - **Conversation search** — partial-match search across chat titles and message content (Postgres `pg_trgm`), grouped one result per chat room.
 - **Web search tool use** — the routed model itself decides whether a question needs a web search (same pattern as ChatGPT/Claude), then answers with cited sources.
+- **File attachments** — drag-and-drop or attach files into a chat (txt, md, csv, xlsx, docx, pptx, hwp/hwpx, pdf, images). Text and embedded images are extracted per format and sent to the model alongside your message; extraction runs in the background so sending isn't blocked on slow conversions.
+- **Attachment preview** — click an attached file's chip (before or after sending) to open it in a modal viewer: text/markdown inline, CSV/XLSX as a table, images and PDFs rendered directly, and DOCX/PPTX converted to PDF on first view.
 
 More features are planned (rate limiting, PPT/Excel export, etc.) — this list will grow with a short bullet per feature as they land.
 
@@ -51,6 +53,24 @@ Four mechanisms decide what the model "remembers" and where that carries over to
 | Import from other AI | Across chat rooms | Manual | Extracts context from another AI platform via a dedicated prompt and carries it into replies here | Memory import |
 
 When two or more of these disagree on the same fact, personal instructions win, then imported memory, then auto-extracted memory (see [conversations.py](backend/app/conversations.py)).
+
+## Attachments
+
+Each of the 9 supported formats is handled differently depending on how well the model can consume it directly:
+
+| Type | Format | Handling |
+| --- | --- | --- |
+| Inserted as-is | TXT | Read file as-is |
+| Inserted as-is | MD | Read file as-is |
+| Text + structured (row-limited) | CSV | Read as text + encoding fallback (UTF-8 → CP949) + capped at 1,000 rows |
+| Text + structured (row-limited) | XLSX | openpyxl, per sheet + capped at 1,000 rows + converted to a markdown table |
+| Hybrid (text extracted, images passed separately) | DOCX | Paragraphs and tables extracted via python-docx; images inside the document are extracted individually and interleaved with the text in original order |
+| Hybrid (text extracted, images passed separately) | PPTX | Per-slide text extracted via python-pptx; images inside slides are extracted individually and interleaved with the text in original order |
+| Hybrid (text extracted, images passed separately) | HWP/HWPX | Body text and tables extracted via hwp-hwpx-parser; images inside the document are extracted individually and interleaved with the text in original order |
+| Passed directly to the vision model | PDF | No extraction - the original file is passed directly to the vision model |
+| Passed directly to the vision model | IMG (jpg/png, etc.) | Converted to PNG and resized (max 1568px) via Pillow, then passed directly to the vision model |
+
+If a hybrid format (DOCX/PPTX/HWP) has no extractable text at all (e.g. a scanned document), it's converted to PDF with LibreOffice and treated like a native PDF attachment instead (see [extraction.py](backend/app/extraction.py)).
 
 ## Run
 

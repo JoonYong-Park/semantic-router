@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  DragEvent,
   KeyboardEvent,
   useEffect,
   useRef,
@@ -9,6 +10,7 @@ import {
 import ModelPicker from "@/components/ModelPicker";
 import ThemeToggle from "@/components/ThemeToggle";
 import ChatBubble from "@/components/ChatBubble";
+import { AttachmentChip } from "@/components/AttachmentChip";
 import DateDivider from "@/components/DateDivider";
 import EmptyState from "@/components/EmptyState";
 import Sidebar from "@/components/Sidebar";
@@ -18,20 +20,36 @@ import UsageStatsModal from "@/components/UsageStatsModal";
 import UsageRing from "@/components/UsageRing";
 import SearchModal from "@/components/SearchModal";
 import MemoryUpdateButton from "@/components/MemoryUpdateButton";
+import AttachmentViewerModal, { ViewerAttachment } from "@/components/AttachmentViewerModal";
 import {
   createConversation,
+  deleteAttachment,
   deleteConversation,
   getConversationMessages,
   listConversations,
   streamMessage,
+  uploadAttachment,
 } from "@/lib/api";
 import { isDifferentDay } from "@/lib/dateFormat";
-import { ChatMessage, Conversation, Mode, Size } from "@/lib/types";
+import {
+  ChatMessage,
+  Conversation,
+  Mode,
+  PendingAttachment,
+  Size,
+} from "@/lib/types";
 
 type Phase = "idle" | "waiting-meta" | "streaming";
 
 let idCounter = 0;
 const nextId = () => `${Date.now()}-${idCounter++}`;
+
+// 서버(attachments.py ALL_ALLOWED_EXTS)와 맞춰둔 허용 확장자 - <input accept>와
+// 드롭 시 1차 필터링용. 최종 검증은 항상 백엔드가 한다.
+const ACCEPTED_EXTENSIONS = [
+  ".txt", ".md", ".csv", ".xlsx", ".docx", ".pptx",
+  ".hwp", ".hwpx", ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
+];
 
 export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -47,8 +65,14 @@ export default function Home() {
   const [activeSettingsModal, setActiveSettingsModal] = useState<
     "personal" | "import" | "usage" | "search" | null
   >(null);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [viewerAttachment, setViewerAttachment] = useState<ViewerAttachment | null>(null);
 
   const isStreaming = phase !== "idle";
+  const isUploadingAttachment = attachments.some((a) => a.status === "uploading");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   // 스트리밍 중 새 청크가 올 때마다 무조건 맨 아래로 스크롤하면, 사용자가
@@ -135,6 +159,7 @@ export default function Home() {
           selectedModel: m.model_used,
           taskCategory: m.task_category,
           complexityScore: m.complexity_score,
+          attachments: m.attachments,
         }))
       );
     } catch {
@@ -157,9 +182,104 @@ export default function Home() {
     }
   }
 
+  // 첨부파일은 메시지 전송 전(드래그하는 순간)에 이미 업로드되므로, 채팅방이
+  // 아직 없으면(첫 메시지 전) 여기서도 handleSend와 동일하게 미리 만들어야 한다.
+  async function ensureConversationId(): Promise<string | null> {
+    if (activeId) return activeId;
+    try {
+      const conv = await createConversation();
+      setConversations((prev) => [conv, ...prev]);
+      setActiveId(conv.id);
+      return conv.id;
+    } catch {
+      return null;
+    }
+  }
+
+  async function handleFilesSelected(files: FileList | File[]) {
+    const convId = await ensureConversationId();
+    if (!convId) return;
+
+    for (const file of Array.from(files)) {
+      const localId = nextId();
+      setAttachments((prev) => [
+        ...prev,
+        { id: localId, file, status: "uploading", progress: 0 },
+      ]);
+
+      try {
+        const uploaded = await uploadAttachment(convId, file, (percent) => {
+          setAttachments((prev) =>
+            prev.map((a) => (a.id === localId ? { ...a, progress: percent } : a))
+          );
+        });
+        setAttachments((prev) =>
+          prev.map((a) =>
+            a.id === localId ? { ...a, id: uploaded.id, status: "ready" } : a
+          )
+        );
+      } catch (err) {
+        setAttachments((prev) =>
+          prev.map((a) =>
+            a.id === localId
+              ? {
+                  ...a,
+                  status: "error",
+                  error: err instanceof Error ? err.message : "업로드 실패",
+                }
+              : a
+          )
+        );
+      }
+    }
+  }
+
+  function handleRemoveAttachment(attachment: PendingAttachment) {
+    setAttachments((prev) => prev.filter((a) => a.id !== attachment.id));
+    // "ready"는 서버에도 올라가 있는 실제 attachment_id라 취소 API를 호출해야
+    // 한다. "uploading" 도중 취소는 로컬에서만 제거 - 업로드가 뒤늦게
+    // 끝나더라도 24시간 뒤 고아 첨부 정리 배치가 알아서 지운다.
+    if (attachment.status === "ready" && activeId) {
+      deleteAttachment(activeId, attachment.id).catch(() => {
+        // 취소 실패해도 UI에서는 이미 지웠으니 조용히 무시 (데모 범위)
+      });
+    }
+  }
+
+  function handleDragEnter(e: DragEvent<HTMLDivElement>) {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingFile(true);
+  }
+
+  function handleDragOver(e: DragEvent<HTMLDivElement>) {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+  }
+
+  function handleDragLeave(e: DragEvent<HTMLDivElement>) {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFile(false);
+  }
+
+  function handleDrop(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingFile(false);
+    if (e.dataTransfer.files.length > 0) {
+      handleFilesSelected(e.dataTransfer.files);
+    }
+  }
+
   async function handleSend(overrideText?: string) {
     const text = (overrideText ?? input).trim();
-    if (!text || isStreaming) return;
+    const readyAttachments = attachments.filter((a) => a.status === "ready");
+    if ((!text && readyAttachments.length === 0) || isStreaming || isUploadingAttachment) {
+      return;
+    }
 
     setInput("");
 
@@ -193,8 +313,22 @@ export default function Home() {
       role: "user",
       content: text,
       createdAt: new Date().toISOString(),
+      // 서버 왕복 없이 방금 업로드된 정보로 바로 보여준다 (channel 새로고침
+      // 전에도 "뭘 첨부해서 보냈는지" 즉시 표시되도록 - 실제 DB 값은 다음
+      // handleSelectConversation 조회 때 그대로 대체된다).
+      attachments: readyAttachments.map((a) => ({
+        id: a.id,
+        original_name: a.file.name,
+        mime_type: a.file.type || "application/octet-stream",
+        size_bytes: a.file.size,
+        extraction_status: "done",
+        created_at: new Date().toISOString(),
+      })),
     };
     setMessages((prev) => [...prev, userMsg]);
+
+    const attachmentIds = readyAttachments.map((a) => a.id);
+    setAttachments([]);
 
     const assistantId = nextId();
     setPhase("waiting-meta");
@@ -202,7 +336,12 @@ export default function Home() {
 
     await streamMessage(
       convId,
-      { content: text, mode, ...(mode !== "auto" ? { size } : {}) },
+      {
+        content: text,
+        mode,
+        ...(mode !== "auto" ? { size } : {}),
+        ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
+      },
       {
         onMeta: (meta) => {
           setPhase("streaming");
@@ -226,11 +365,23 @@ export default function Home() {
             )
           );
         },
+        onProcessing: (message) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, processingMessage: message } : m
+            )
+          );
+        },
         onChunk: (chunk) => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
-                ? { ...m, content: m.content + chunk, searchingQuery: null }
+                ? {
+                    ...m,
+                    content: m.content + chunk,
+                    searchingQuery: null,
+                    processingMessage: null,
+                  }
                 : m
             )
           );
@@ -319,9 +470,29 @@ export default function Home() {
         />
       )}
 
+      {viewerAttachment && activeId && (
+        <AttachmentViewerModal
+          conversationId={activeId}
+          attachment={viewerAttachment}
+          onClose={() => setViewerAttachment(null)}
+        />
+      )}
+
       <MemoryUpdateButton />
 
-      <div className="flex min-w-0 flex-1 flex-col bg-white dark:bg-gray-950">
+      <div
+        className="relative flex min-w-0 flex-1 flex-col bg-white dark:bg-gray-950"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDraggingFile && (
+          <div className="pointer-events-none absolute inset-0 z-10 m-3 flex items-center justify-center rounded-2xl border-2 border-dashed border-gray-400 bg-white/80 text-sm font-medium text-gray-600 dark:border-gray-500 dark:bg-gray-950/80 dark:text-gray-300">
+            여기에 파일을 놓으세요
+          </div>
+        )}
+
         <header className="flex items-center justify-end border-b border-gray-100 px-4 py-2.5 dark:border-gray-800">
           <ThemeToggle />
         </header>
@@ -339,7 +510,14 @@ export default function Home() {
               return (
                 <div key={m.id}>
                   {showDivider && <DateDivider iso={m.createdAt} />}
-                  <ChatBubble message={m} isStreaming={m.id === streamingId} />
+                  <ChatBubble
+                    message={m}
+                    isStreaming={m.id === streamingId}
+                    onAttachmentClick={(attachmentId) => {
+                      const found = m.attachments?.find((a) => a.id === attachmentId);
+                      if (found) setViewerAttachment(found);
+                    }}
+                  />
                 </div>
               );
             })}
@@ -355,8 +533,64 @@ export default function Home() {
         </main>
 
         <div className="border-t border-gray-100 bg-white px-4 py-4 dark:border-gray-800 dark:bg-gray-950">
-          <div className="mx-auto flex max-w-2xl items-end gap-2 rounded-3xl border border-gray-300 bg-white px-2 py-1.5 shadow-sm focus-within:border-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:focus-within:border-gray-500">
+          <div className="mx-auto max-w-2xl">
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachments.map((a) => (
+                  <AttachmentChip
+                    key={a.id}
+                    name={a.file.name}
+                    progress={a.status === "uploading" ? a.progress ?? 0 : undefined}
+                    error={a.status === "error" ? a.error ?? "업로드 실패" : undefined}
+                    onRemove={() => handleRemoveAttachment(a)}
+                    onClick={
+                      a.status === "ready"
+                        ? () =>
+                            setViewerAttachment({
+                              id: a.id,
+                              original_name: a.file.name,
+                              mime_type: a.file.type || "application/octet-stream",
+                              size_bytes: a.file.size,
+                            })
+                        : undefined
+                    }
+                  />
+                ))}
+              </div>
+            )}
+
+          <div className="flex items-end gap-2 rounded-3xl border border-gray-300 bg-white px-2 py-1.5 shadow-sm focus-within:border-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:focus-within:border-gray-500">
             <UsageRing />
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={ACCEPTED_EXTENSIONS.join(",")}
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  handleFilesSelected(e.target.files);
+                }
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="파일 첨부"
+              className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-gray-500 hover:bg-gray-100 disabled:opacity-30 dark:text-gray-400 dark:hover:bg-gray-800"
+            >
+              <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+                <path
+                  d="M21.44 11.05l-9.19 9.19a5 5 0 01-7.07-7.07l9.19-9.19a3.33 3.33 0 014.71 4.71l-9.2 9.19a1.67 1.67 0 01-2.36-2.36l8.49-8.48"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
 
             <textarea
               ref={textareaRef}
@@ -372,7 +606,6 @@ export default function Home() {
               onCompositionEnd={() => {
                 isComposingRef.current = false;
               }}
-              disabled={isStreaming}
             />
 
             <ModelPicker mode={mode} size={size} onSelect={(m, s) => { setMode(m); setSize(s); }} />
@@ -380,7 +613,11 @@ export default function Home() {
             <button
               type="button"
               onClick={() => handleSend()}
-              disabled={isStreaming || !input.trim()}
+              disabled={
+                isStreaming ||
+                isUploadingAttachment ||
+                (!input.trim() && attachments.filter((a) => a.status === "ready").length === 0)
+              }
               aria-label="전송"
               className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-900 text-white disabled:opacity-30 dark:bg-white dark:text-gray-900"
             >
@@ -394,6 +631,7 @@ export default function Home() {
                 />
               </svg>
             </button>
+          </div>
           </div>
         </div>
       </div>

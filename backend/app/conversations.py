@@ -8,6 +8,8 @@
 import asyncio
 import json
 import logging
+import time
+import uuid as uuid_module
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -16,19 +18,54 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import attachments as attachments_module
 from app import classifier, complexity, providers
 from app.db import SessionLocal, get_session
-from app.db_models import DEMO_USER_ID, Conversation, Message, UserMemory, UserSettings
+from app.db_models import (
+    DEMO_USER_ID,
+    Attachment,
+    Conversation,
+    Message,
+    UserMemory,
+    UserSettings,
+)
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.router import select_model
-from app.schemas import ConversationOut, MessageCreate, MessageOut
-from app.token_counter import count_tokens
+from app.schemas import AttachmentOut, ConversationOut, MessageCreate, MessageOut
+from app.token_counter import count_tokens, estimate_content_tokens
 
 logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 MAX_CONTEXT_TOKENS = 4000
+
+# 업로드 응답은 추출 완료를 기다리지 않고 바로 돌아오므로("pending" 상태로
+# 전송 버튼을 즉시 누를 수 있게 하기 위함, attachments.py 참고), 실제 모델
+# 호출 직전에는 그 추출이 끝나길 여기서 기다린다. LibreOffice 변환처럼 느린
+# 케이스를 감안한 타임아웃 - 넘기면 그 시점 상태 그대로 진행한다(아래
+# _content_with_attachments가 미완료/실패 첨부를 텍스트 안내로 대체함).
+ATTACHMENT_WAIT_TIMEOUT_SECONDS = 30.0
+ATTACHMENT_POLL_INTERVAL_SECONDS = 0.3
+
+
+async def _wait_for_attachment_processing(
+    session: AsyncSession, atts: list[Attachment]
+) -> None:
+    deadline = time.monotonic() + ATTACHMENT_WAIT_TIMEOUT_SECONDS
+    pending = [a for a in atts if a.extraction_status == "pending"]
+    while pending and time.monotonic() < deadline:
+        await asyncio.sleep(ATTACHMENT_POLL_INTERVAL_SECONDS)
+        for att in list(pending):
+            await session.refresh(att)
+            if att.extraction_status != "pending":
+                pending.remove(att)
+    if pending:
+        logger.warning(
+            "첨부파일 처리 대기 타임아웃(%s초) - 미완료 상태로 진행: %s",
+            ATTACHMENT_WAIT_TIMEOUT_SECONDS,
+            [str(a.id) for a in pending],
+        )
 # 제목 생성은 품질보다 속도/비용이 중요해서 가장 작은 모델을 쓴다.
 TITLE_MODEL = get_model("openai", "small")
 
@@ -63,16 +100,18 @@ async def delete_conversation(
     conv = await session.get(Conversation, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
-    # ORM cascade 대신 단일 DELETE로 처리 - 자식 메시지 정리는 FK의
-    # ondelete="CASCADE"(DB 레벨)가 담당한다.
+    # ORM cascade 대신 단일 DELETE로 처리 - 자식 메시지/첨부파일 DB 행 정리는
+    # FK의 ondelete="CASCADE"(DB 레벨)가 담당한다. 디스크에 남는 업로드
+    # 파일(원본+추출 이미지)은 DB가 못 지워주니 커밋 성공 후 별도로 지운다.
     await session.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await session.commit()
+    attachments_module.delete_chat_upload_dir(conversation_id)
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])
 async def get_messages(
     conversation_id: UUID, session: AsyncSession = Depends(get_session)
-) -> list[Message]:
+) -> list[MessageOut]:
     conv = await session.get(Conversation, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
@@ -82,14 +121,74 @@ async def get_messages(
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.created_at)
     )
-    return list(result.scalars().all())
+    messages = list(result.scalars().all())
+
+    # Message<->Attachment 사이에 relationship()을 안 걸어뒀으므로(다른 모델과
+    # 동일한 컨벤션), 첨부 목록을 별도 조회해서 수동으로 붙인다.
+    attachments_by_msg: dict[UUID, list[Attachment]] = {}
+    msg_ids = [m.id for m in messages]
+    if msg_ids:
+        att_result = await session.execute(
+            select(Attachment).where(Attachment.message_id.in_(msg_ids))
+        )
+        for att in att_result.scalars().all():
+            attachments_by_msg.setdefault(att.message_id, []).append(att)
+
+    return [
+        MessageOut(
+            id=m.id,
+            role=m.role,
+            content=m.content,
+            model_used=m.model_used,
+            task_category=m.task_category,
+            complexity_score=m.complexity_score,
+            created_at=m.created_at,
+            attachments=[
+                AttachmentOut.model_validate(a)
+                for a in attachments_by_msg.get(m.id, [])
+            ],
+        )
+        for m in messages
+    ]
+
+
+def _content_with_attachments(text: str, atts: list[Attachment]) -> str | list[dict]:
+    """텍스트 + 첨부파일들을 provider 중립적인 내부 content 표현으로 합친다.
+    첨부가 없으면 지금까지와 동일하게 순수 문자열을 그대로 반환 (기존 텍스트
+    전용 턴은 조립 비용 없이 그대로 지나간다)."""
+    if not atts:
+        return text
+    blocks: list[dict] = []
+    if text:
+        blocks.append({"type": "text", "text": text})
+    for att in atts:
+        blocks.append({"type": "text", "text": f"[첨부파일: {att.original_name}]"})
+        if att.extraction_status == "done":
+            blocks.extend(attachments_module.blocks_for_model(att))
+        else:
+            # 처리 실패, 또는 대기 타임아웃까지 넘겨서 아직 pending인 경우 -
+            # 원본 오피스 문서 mime_type을 그대로 "document" 블록으로 보내면
+            # provider가 이해 못 해 400을 낼 수 있으므로, 안내 텍스트로 대체한다.
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": "(이 첨부파일은 아직 처리되지 않았거나 처리에 실패해 내용이 포함되지 않았습니다.)",
+                }
+            )
+    return blocks
 
 
 async def _build_history(
-    session: AsyncSession, conversation_id: UUID, new_query: str
-) -> list[dict[str, str]]:
+    session: AsyncSession,
+    conversation_id: UUID,
+    new_query: str,
+    new_attachments: list[Attachment] | None = None,
+) -> list[dict[str, str | list[dict]]]:
     """토큰 예산(MAX_CONTEXT_TOKENS) 안에서 최근 메시지부터 거꾸로 채우는
     슬라이딩 윈도우. 새 사용자 질문은 아직 DB에 없으므로 마지막에 직접 붙인다.
+
+    과거 턴 중 첨부파일이 달려 있던 턴은 attachments 테이블을 조인해서
+    멀티모달 content 배열로 재구성한다 (텍스트만 있던 턴은 그대로 문자열).
     """
     result = await session.execute(
         select(Message)
@@ -101,6 +200,9 @@ async def _build_history(
     selected: list[Message] = []
     total = 0
     for msg in history:
+        # 토큰 예산 산정은 지금까지와 동일하게 DB에 저장된 순수 텍스트
+        # 기준(token_count 컬럼 또는 tiktoken 근사)으로 계산한다 - 슬라이딩
+        # 윈도우 크기 산정 로직 자체는 첨부파일 도입으로 바꾸지 않는다.
         tokens = msg.token_count or count_tokens(msg.content)
         if total + tokens > MAX_CONTEXT_TOKENS:
             break
@@ -109,9 +211,29 @@ async def _build_history(
 
     selected.reverse()
 
+    attachments_by_msg: dict[UUID, list[Attachment]] = {}
+    msg_ids = [m.id for m in selected]
+    if msg_ids:
+        att_result = await session.execute(
+            select(Attachment).where(Attachment.message_id.in_(msg_ids))
+        )
+        for att in att_result.scalars().all():
+            attachments_by_msg.setdefault(att.message_id, []).append(att)
+
     return [
-        *[{"role": m.role, "content": m.content} for m in selected],
-        {"role": "user", "content": new_query},
+        *[
+            {
+                "role": m.role,
+                "content": _content_with_attachments(
+                    m.content, attachments_by_msg.get(m.id, [])
+                ),
+            }
+            for m in selected
+        ],
+        {
+            "role": "user",
+            "content": _content_with_attachments(new_query, new_attachments or []),
+        },
     ]
 
 
@@ -202,23 +324,63 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 }
             )
 
+            # 이번 턴에 참조된 첨부파일 조회 - 이 채팅방 소유이면서 아직 다른
+            # 메시지에 붙지 않은(message_id IS NULL) 것만 유효하다고 본다
+            # (이미 전송된 첨부를 재사용하려는 요청은 조용히 무시).
+            new_attachments: list[Attachment] = []
+            if body.attachment_ids:
+                att_result = await session.execute(
+                    select(Attachment).where(
+                        Attachment.id.in_(body.attachment_ids),
+                        Attachment.chat_id == conversation_id,
+                        Attachment.message_id.is_(None),
+                    )
+                )
+                new_attachments = list(att_result.scalars().all())
+
+            # 업로드 응답이 추출 완료를 기다리지 않고 바로 오므로(첨부 직후
+            # 바로 전송 버튼을 누를 수 있게 하기 위함), 여기서 실제 모델
+            # 호출 전에 백그라운드 추출이 끝나길 기다린다.
+            if any(a.extraction_status == "pending" for a in new_attachments):
+                yield _sse({"type": "processing", "message": "첨부파일 처리 중..."})
+                await _wait_for_attachment_processing(session, new_attachments)
+
             # 3) 슬라이딩 윈도우로 이전 대화 이력 구성 - _build_history는 "이번
             #    질문은 아직 DB에 없다"는 전제로 마지막에 new_query를 직접 붙이므로,
             #    반드시 이번 사용자 메시지를 저장하기 *전에* 호출해야 한다
             #    (순서가 바뀌면 방금 커밋된 메시지가 조회 결과에도 잡히고 new_query로도
             #    또 붙어서, 모델에게 같은 사용자 메시지가 두 번 들어가는 버그가 생긴다).
-            history = await _build_history(session, conversation_id, body.content)
+            history = await _build_history(
+                session, conversation_id, body.content, new_attachments
+            )
 
-            # 4) 사용자 메시지 저장
-            user_tokens = count_tokens(body.content)
+            # 4) 사용자 메시지 저장 - id를 미리 만들어서 같은 트랜잭션에서
+            #    첨부파일의 message_id를 바로 연결한다 (전송 완료 표시).
+            user_message_id = uuid_module.uuid4()
+            # 슬라이딩 윈도우 예산에 첨부파일(텍스트+이미지/문서 근사치)도
+            # 반영되도록, 실제로 모델에 보낸 것과 같은 content(history의
+            # 마지막 항목 - _content_with_attachments 결과)를 그대로 재사용해
+            # 카운트한다. body.content(순수 텍스트)만 세면 큰 첨부가 달린
+            # 턴이 "거의 공짜"로 취급돼 윈도우에 과도하게 오래 남는 문제가 있었다.
+            user_tokens = estimate_content_tokens(history[-1]["content"])
             session.add(
                 Message(
+                    id=user_message_id,
                     conversation_id=conversation_id,
                     role="user",
                     content=body.content,
                     token_count=user_tokens,
                 )
             )
+            # Attachment<->Message 사이에는(다른 모델들과 마찬가지로) ORM
+            # relationship()을 일부러 안 걸어뒀기 때문에, SQLAlchemy의 flush
+            # 순서 결정 로직이 이 둘의 FK 의존관계를 모른다. relationship()
+            # 없이 순서를 보장하려면 메시지를 먼저 flush로 실제 INSERT시켜야
+            # 한다 - 안 그러면 첨부파일 UPDATE가 먼저 나가서 아직 존재하지
+            # 않는 message_id를 참조하다 FK 위반 에러가 난다.
+            await session.flush()
+            for att in new_attachments:
+                att.message_id = user_message_id
             await session.execute(
                 Conversation.__table__.update()
                 .where(Conversation.id == conversation_id)
@@ -330,7 +492,9 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             # (드물게) 응답에 안 실려 왔을 때만 tiktoken 근사치로 대체한다.
             input_tokens = usage.get("input_tokens")
             if input_tokens is None:
-                input_tokens = sum(count_tokens(m["content"]) for m in history)
+                input_tokens = sum(
+                    estimate_content_tokens(m["content"]) for m in history
+                )
             output_tokens = usage.get("output_tokens")
             if output_tokens is None:
                 output_tokens = count_tokens(full_response)
