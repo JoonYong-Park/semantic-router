@@ -12,6 +12,7 @@ from app.attachments import router as attachments_router
 from app.conversations import router as conversations_router
 from app.db import init_db
 from app.memory import router as memory_router
+from app.memory import scheduled_extraction_loop
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.providers import call_model
 from app.router import select_model
@@ -48,9 +49,11 @@ async def lifespan(app: FastAPI):
     await init_db()
     task = asyncio.create_task(_load_models_background())
     cleanup_task = asyncio.create_task(orphan_cleanup_loop())
+    memory_task = asyncio.create_task(scheduled_extraction_loop())
     yield
     task.cancel()
     cleanup_task.cancel()
+    memory_task.cancel()
 
 
 app = FastAPI(title="ASAP - Category/Complexity Routing", lifespan=lifespan)
