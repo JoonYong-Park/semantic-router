@@ -6,8 +6,15 @@ export function formatDateDivider(iso: string): string {
 }
 
 export function formatHoverTime(iso: string): string {
-  // 예: 오전 2:30
-  return format(new Date(iso), "a h:mm", { locale: ko });
+  const date = new Date(iso);
+  const now = new Date();
+  // 오늘이면 시간만(예: 오전 2:30), 하루라도 지났으면 날짜까지 같이 표시
+  // (연도가 다르면 연도도 포함) - 날짜 없이 시간만 보면 언제인지 헷갈리므로.
+  if (isSameDay(date, now)) {
+    return format(date, "a h:mm", { locale: ko });
+  }
+  const datePattern = date.getFullYear() === now.getFullYear() ? "M월 d일" : "yyyy년 M월 d일";
+  return format(date, `${datePattern} a h:mm`, { locale: ko });
 }
 
 export function isDifferentDay(a: string, b: string): boolean {

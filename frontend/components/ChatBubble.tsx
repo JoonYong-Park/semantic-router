@@ -1,8 +1,66 @@
+"use client";
+
+import { useState } from "react";
 import { ChatMessage } from "@/lib/types";
 import { formatHoverTime } from "@/lib/dateFormat";
 import { AttachmentChip } from "./AttachmentChip";
 import MarkdownContent from "./MarkdownContent";
 import ModelBadge from "./ModelBadge";
+
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5">
+      <rect x="9" y="9" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="2" />
+      <path
+        d="M15 9V5a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2h4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5">
+      <path
+        d="M5 13l4 4L19 7"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 클립보드 권한이 없는 환경 등 - 조용히 무시 (버튼은 그대로 다시 누를 수 있음)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      aria-label="응답 복사"
+      title={copied ? "복사됨" : "복사"}
+      className="flex h-4 w-4 items-center justify-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
+  );
+}
 
 export default function ChatBubble({
   message,
@@ -73,8 +131,9 @@ export default function ChatBubble({
           </div>
         )}
       </div>
-      <div className="h-4 text-[11px] leading-4 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 dark:text-gray-500">
-        {time}
+      <div className="flex h-4 items-center gap-2 text-[11px] leading-4 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 dark:text-gray-500">
+        <span>{time}</span>
+        <CopyButton text={message.content} />
       </div>
     </div>
   );
