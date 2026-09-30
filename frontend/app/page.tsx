@@ -567,12 +567,20 @@ export default function Home() {
               type="file"
               multiple
               accept={ACCEPTED_EXTENSIONS.join(",")}
-              className="hidden"
+              className="sr-only"
               onChange={(e) => {
-                if (e.target.files && e.target.files.length > 0) {
-                  handleFilesSelected(e.target.files);
-                }
+                // e.target.files는 input에 실시간으로 묶인 라이브 FileList라,
+                // handleFilesSelected(비동기 - 내부에 await 지점이 있음)에
+                // 그대로 넘기고 나서 바로 아래에서 value를 리셋하면, 그 await가
+                // 끝나기도 전에 라이브 FileList가 먼저 비어버려서 실제로는
+                // 파일이 0개로 처리된다(선택창은 뜨는데 골라도 반응 없는 버그의
+                // 원인이었음). 그래서 File 객체들을 여기서 동기적으로 배열로
+                // 미리 꺼내놓은 뒤에 value를 리셋한다.
+                const selected = e.target.files ? Array.from(e.target.files) : [];
                 e.target.value = "";
+                if (selected.length > 0) {
+                  handleFilesSelected(selected);
+                }
               }}
             />
             <button
