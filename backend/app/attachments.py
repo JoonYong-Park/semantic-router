@@ -38,6 +38,8 @@ logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/conversations", tags=["attachments"])
 
 UPLOAD_ROOT = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
+CHATS_ROOT = UPLOAD_ROOT / "chats"
+PROJECTS_ROOT = UPLOAD_ROOT / "projects"  # 프로젝트 참고자료 기능 - 아직 미사용, 폴더도 미리 안 만듦
 ORPHAN_MAX_AGE = timedelta(hours=24)
 ORPHAN_SWEEP_INTERVAL_SECONDS = 60 * 60  # 1시간마다 스캔
 
@@ -88,11 +90,58 @@ def _ext_of(filename: str) -> str:
 
 
 def _chat_upload_dir(chat_id: uuid.UUID) -> Path:
-    return UPLOAD_ROOT / str(chat_id)
+    return CHATS_ROOT / str(chat_id)
 
 
-def _preview_cache_path(chat_id: uuid.UUID, attachment_id: uuid.UUID) -> Path:
-    return _chat_upload_dir(chat_id) / "previews" / f"{attachment_id}.pdf"
+def _preview_cache_path(root_dir: Path, item_id: uuid.UUID) -> Path:
+    return root_dir / "previews" / f"{item_id}.pdf"
+
+
+def _save_uploaded_file(root_dir: Path, ext: str, content: bytes) -> tuple[uuid.UUID, Path]:
+    """루트 디렉터리(uploads/chats/{chat_id} 또는 향후 uploads/projects/{project_id})
+    밑에 UUID 파일명으로 원본을 저장한다. 원본 파일명은 절대 경로에 안 쓴다
+    (path traversal 방지) - 채팅 첨부/프로젝트 참고자료가 공유해서 쓸 수 있게
+    특정 chat_id에 결합하지 않은 범용 형태."""
+    file_uuid = uuid.uuid4()
+    root_dir.mkdir(parents=True, exist_ok=True)
+    stored_path = root_dir / f"{file_uuid}.{ext}"
+    stored_path.write_bytes(content)
+    return file_uuid, stored_path
+
+
+def _delete_stored_files(
+    root_dir: Path,
+    item_id: uuid.UUID,
+    original_name: str,
+    stored_path: str,
+    extracted_text: str | None,
+) -> None:
+    """디스크에 저장된 파일을 전부 정리한다 - 원본/변환본, 스캔본 폴백 시 남는
+    원본, 추출된 임베드 이미지, 미리보기 캐시까지. 채팅 첨부(_delete_attachment_files)와
+    향후 프로젝트 참고자료가 공유해서 쓸 수 있게 chat_id 대신 root_dir을 받는
+    범용 형태로 뒀다."""
+    Path(stored_path).unlink(missing_ok=True)
+
+    # 스캔본 폴백(텍스트 0건)으로 stored_path가 변환된 PDF로 교체된 경우,
+    # 원래 업로드된 원본(docx/pptx/hwp)은 업로드 시점 파일명 규칙
+    # ({item_id}.{원본 확장자})으로 같은 디렉터리에 그대로 남아있다.
+    # stored_path만 지우면 이 원본이 고아로 남으므로 같이 정리한다.
+    original_ext = _ext_of(original_name)
+    stored_ext = Path(stored_path).suffix.lstrip(".").lower()
+    if original_ext and stored_ext != original_ext:
+        original_path = root_dir / f"{item_id}.{original_ext}"
+        original_path.unlink(missing_ok=True)
+
+    if extracted_text:
+        try:
+            blocks = json.loads(extracted_text)
+        except json.JSONDecodeError:
+            blocks = []
+        for block in blocks:
+            if block.get("type") == "image" and block.get("path"):
+                Path(block["path"]).unlink(missing_ok=True)
+
+    _preview_cache_path(root_dir, item_id).unlink(missing_ok=True)
 
 
 async def _get_attachment_or_404(
@@ -250,12 +299,8 @@ async def upload_attachment(
             detail=f"파일이 너무 큽니다 (최대 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB).",
         )
 
-    # 원본 파일명은 절대 경로에 안 쓴다 (path traversal 방지) - UUID로만 저장.
-    file_uuid = uuid.uuid4()
     upload_dir = _chat_upload_dir(conversation_id)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    stored_path = upload_dir / f"{file_uuid}.{ext}"
-    stored_path.write_bytes(content)
+    file_uuid, stored_path = _save_uploaded_file(upload_dir, ext, content)
 
     mime_type = MIME_BY_EXT.get(ext, "application/octet-stream")
     filename = file.filename or f"{file_uuid}.{ext}"
@@ -311,28 +356,15 @@ async def cancel_attachment(
 
 
 def _delete_attachment_files(attachment: Attachment) -> None:
-    Path(attachment.stored_path).unlink(missing_ok=True)
-
-    # 스캔본 폴백(텍스트 0건)으로 stored_path가 변환된 PDF로 교체된 경우,
-    # 원래 업로드된 원본(docx/pptx/hwp)은 업로드 시점 파일명 규칙
-    # ({attachment.id}.{원본 확장자})으로 같은 디렉터리에 그대로 남아있다.
-    # stored_path만 지우면 이 원본이 고아로 남으므로 같이 정리한다.
-    original_ext = _ext_of(attachment.original_name)
-    stored_ext = Path(attachment.stored_path).suffix.lstrip(".").lower()
-    if original_ext and stored_ext != original_ext:
-        original_path = _chat_upload_dir(attachment.chat_id) / f"{attachment.id}.{original_ext}"
-        original_path.unlink(missing_ok=True)
-
-    if attachment.extracted_text:
-        try:
-            blocks = json.loads(attachment.extracted_text)
-        except json.JSONDecodeError:
-            blocks = []
-        for block in blocks:
-            if block.get("type") == "image" and block.get("path"):
-                Path(block["path"]).unlink(missing_ok=True)
-
-    _preview_cache_path(attachment.chat_id, attachment.id).unlink(missing_ok=True)
+    """채팅 첨부 전용 얇은 래퍼 - 해당 chat_id의 루트 디렉터리를 채워서
+    범용 _delete_stored_files에 위임한다."""
+    _delete_stored_files(
+        _chat_upload_dir(attachment.chat_id),
+        attachment.id,
+        attachment.original_name,
+        attachment.stored_path,
+        attachment.extracted_text,
+    )
 
 
 async def _sweep_orphan_attachments() -> None:
@@ -572,16 +604,16 @@ async def get_attachment_text(
 
 
 def _convert_for_preview(
-    stored_path: Path, chat_id: uuid.UUID, attachment_id: uuid.UUID
+    stored_path: Path, root_dir: Path, item_id: uuid.UUID
 ) -> Path | None:
     pdf_path = extraction._convert_to_pdf_with_libreoffice(stored_path)
     if pdf_path is None:
         return None
 
-    preview_dir = _chat_upload_dir(chat_id) / "previews"
+    preview_dir = root_dir / "previews"
     preview_dir.mkdir(parents=True, exist_ok=True)
-    final_path = preview_dir / f"{attachment_id}.pdf"
-    tmp_path = preview_dir / f".{attachment_id}.pdf.tmp"
+    final_path = preview_dir / f"{item_id}.pdf"
+    tmp_path = preview_dir / f".{item_id}.pdf.tmp"
     # 변환 결과를 임시 파일로 옮긴 뒤 rename - 캐시 디렉터리에 부분 파일이
     # 남지 않도록(다른 요청이 그 사이에 읽어가는 걸 방지).
     shutil.move(pdf_path, tmp_path)
@@ -608,7 +640,8 @@ async def get_attachment_preview_pdf(
     if ext not in (DOCX_EXTS | PPTX_EXTS):
         raise HTTPException(status_code=400, detail="미리보기 변환을 지원하지 않는 형식입니다.")
 
-    cache_path = _preview_cache_path(conversation_id, attachment_id)
+    upload_dir = _chat_upload_dir(conversation_id)
+    cache_path = _preview_cache_path(upload_dir, attachment_id)
     if cache_path.exists():
         return _preview_pdf_response(cache_path)
 
@@ -624,7 +657,7 @@ async def get_attachment_preview_pdf(
 
         try:
             result_path = await asyncio.wait_for(
-                asyncio.to_thread(_convert_for_preview, stored_path, conversation_id, attachment_id),
+                asyncio.to_thread(_convert_for_preview, stored_path, upload_dir, attachment_id),
                 timeout=PREVIEW_CONVERT_TIMEOUT,
             )
         except asyncio.TimeoutError as exc:

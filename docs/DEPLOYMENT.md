@@ -67,6 +67,18 @@ interact with `scripts/deploy.sh`'s backup/rollback logic:
   already exist on the runner, so no manual setup step is required before the
   first deploy after this change, other than setting `UPLOAD_HOST_DIR` in the
   runner's `.env`.
+- Inside that mount, files are split by purpose: `uploads/chats/{chat_id}/`
+  for chat attachments (implemented) and `uploads/projects/{project_id}/`
+  for project reference files (not implemented yet). The volume mount itself
+  doesn't need to change when this split changes - it's just a subfolder
+  layout inside the same bind-mounted directory.
+
+### Lifecycle rules for uploaded files
+
+| | Chat attachments | Project reference files (planned) |
+| --- | --- | --- |
+| Before use | Orphaned (not yet attached to a sent message) for 24h → swept and deleted | N/A - confirmed the moment it's uploaded, no orphan state |
+| Deletion | Deleted individually by the user, or the whole `uploads/chats/{chat_id}/` directory is removed when the chat room is deleted | Deleted individually via a delete API call (disk file + DB row removed immediately, project usage recalculated), or the whole `uploads/projects/{project_id}/` directory is removed when the project is deleted |
 
 ## Secrets handling
 
