@@ -14,11 +14,8 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
-import SettingsModal from "@/components/SettingsModal";
-import ImportMemoryModal from "@/components/ImportMemoryModal";
-import UsageStatsModal from "@/components/UsageStatsModal";
 import SearchModal from "@/components/SearchModal";
-import MemoryModal from "@/components/MemoryModal";
+import SettingsWindow, { SettingsTab } from "@/components/SettingsWindow";
 import MemoryUpdateButton from "@/components/MemoryUpdateButton";
 import { AppDataContext, AppDataContextValue } from "@/contexts/AppDataContext";
 import {
@@ -40,13 +37,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [activeSettingsModal, setActiveSettingsModal] = useState<
-    "personal" | "import" | "usage" | "search" | "memory" | null
-  >(null);
-  // 프로젝트 페이지의 "메모리 바로가기"로 메모리 모달을 열 때, 그 프로젝트
-  // 섹션을 펼친 채로 열기 위한 값 - 일반적인 사이드바 "설정 > 메모리"로 열
-  // 땐 null(아무 섹션도 안 펼침).
-  const [memoryModalProjectId, setMemoryModalProjectId] = useState<string | null>(null);
+  // "채팅 검색"은 설정과 무관한 별도 사이드바 버튼이라 자기 state를 따로 둔다.
+  const [searchOpen, setSearchOpen] = useState(false);
+  // "설정" 버튼은 이제 개인 지침/가져오기/토큰 사용량/메모리/화면(다크모드)을
+  // 탭으로 묶은 창 하나를 연다(예전엔 드롭다운 메뉴 → 항목별 개별 모달).
+  // null이면 닫힌 상태, 열려있으면 어느 탭으로 열지(+ 메모리 탭이면 어느
+  // 프로젝트를 펼쳐둘지)를 들고 있는다.
+  const [settingsWindow, setSettingsWindow] = useState<{
+    tab: SettingsTab;
+    memoryProjectId?: string | null;
+  } | null>(null);
   // /(홈) 또는 /c/[id] 페이지가 실제 스트리밍 여부를 보고해오는 값 - 사이드바
   // 네비게이션(다른 채팅 선택/새 채팅/삭제)을 막는 데 쓴다(기존 activeId===id
   // 가드와 동일한 정책, 4번 항목).
@@ -281,11 +281,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
   }
 
-  // 프로젝트 페이지의 "메모리 바로가기" - 메모리 설정 모달을 그 프로젝트
+  // 프로젝트 페이지의 "메모리 바로가기" - 설정 창을 메모리 탭, 그 프로젝트
   // 섹션이 펼쳐진 채로 연다.
   function openMemoryForProject(projectId: string) {
-    setMemoryModalProjectId(projectId);
-    setActiveSettingsModal("memory");
+    setSettingsWindow({ tab: "memory", memoryProjectId: projectId });
   }
 
   const contextValue: AppDataContextValue = {
@@ -317,11 +316,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           onSelect={(id) => router.push(`/c/${id}`)}
           onNew={handleNewChat}
           onDelete={handleDeleteConversation}
-          onOpenPersonalInstruction={() => setActiveSettingsModal("personal")}
-          onOpenImportMemory={() => setActiveSettingsModal("import")}
-          onOpenUsage={() => setActiveSettingsModal("usage")}
-          onOpenSearch={() => setActiveSettingsModal("search")}
-          onOpenMemory={() => setActiveSettingsModal("memory")}
+          onOpenSettings={() => setSettingsWindow({ tab: "personal" })}
+          onOpenSearch={() => setSearchOpen(true)}
           projects={projects}
           onOpenProject={(id) => router.push(`/projects/${id}`)}
           onNewProject={handleNewProject}
@@ -335,31 +331,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           onDeleteProject={handleDeleteProject}
         />
 
-        {activeSettingsModal === "personal" && (
-          <SettingsModal onClose={() => setActiveSettingsModal(null)} />
-        )}
-        {activeSettingsModal === "import" && (
-          <ImportMemoryModal onClose={() => setActiveSettingsModal(null)} />
-        )}
-        {activeSettingsModal === "usage" && (
-          <UsageStatsModal onClose={() => setActiveSettingsModal(null)} />
-        )}
-        {activeSettingsModal === "search" && (
+        {searchOpen && (
           <SearchModal
-            onClose={() => setActiveSettingsModal(null)}
+            onClose={() => setSearchOpen(false)}
             onSelectConversation={(id) => {
-              setActiveSettingsModal(null);
+              setSearchOpen(false);
               router.push(`/c/${id}`);
             }}
           />
         )}
-        {activeSettingsModal === "memory" && (
-          <MemoryModal
-            initialOpenProjectId={memoryModalProjectId}
-            onClose={() => {
-              setActiveSettingsModal(null);
-              setMemoryModalProjectId(null);
-            }}
+        {settingsWindow && (
+          <SettingsWindow
+            initialTab={settingsWindow.tab}
+            initialMemoryProjectId={settingsWindow.memoryProjectId}
+            onClose={() => setSettingsWindow(null)}
           />
         )}
 

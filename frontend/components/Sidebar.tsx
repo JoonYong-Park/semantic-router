@@ -81,74 +81,6 @@ function SettingsIcon() {
   );
 }
 
-function FileTextIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
-      <path
-        d="M14 3H7a1 1 0 00-1 1v16a1 1 0 001 1h10a1 1 0 001-1V8l-5-5z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path d="M14 3v5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="9" y1="13" x2="15" y2="13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <line x1="9" y1="17" x2="15" y2="17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ArrowDownToLineIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
-      <path d="M12 4v11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M7 11l5 5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="5" y1="20" x2="19" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function MoonIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
-      <path
-        d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SunIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
-      <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
-      <path
-        d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function BrainIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
-      <path
-        d="M9 4a3 3 0 00-3 3v1a3 3 0 00-2 2.8V13a3 3 0 002 2.8V17a3 3 0 003 3h1M15 4a3 3 0 013 3v1a3 3 0 012 2.8V13a3 3 0 01-2 2.8V17a3 3 0 01-3 3h-1M12 4v16"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 function ChevronIcon({ open }: { open: boolean }) {
   return (
     <svg
@@ -355,16 +287,6 @@ function ConversationRow({
   );
 }
 
-function BarChartIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
-      <line x1="5" y1="20" x2="5" y2="10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <line x1="12" y1="20" x2="12" y2="4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <line x1="19" y1="20" x2="19" y2="14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 // 라이트/다크 모드에 맞춰 사이드바 톤도 같이 바뀐다 (라이트: 옅은 회색, 다크: 예전과 동일한 짙은 회색).
 // collapsed일 땐 아이콘만 남은 얇은 레일로 줄어들고, 이때는 앱 아이콘 자체가
 // 펼치기 버튼을 겸한다(따로 접기 아이콘을 안 둠).
@@ -382,11 +304,8 @@ export default function Sidebar({
   onSelect,
   onNew,
   onDelete,
-  onOpenPersonalInstruction,
-  onOpenImportMemory,
-  onOpenUsage,
+  onOpenSettings,
   onOpenSearch,
-  onOpenMemory,
   projects,
   onOpenProject,
   onNewProject,
@@ -407,11 +326,10 @@ export default function Sidebar({
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
-  onOpenPersonalInstruction: () => void;
-  onOpenImportMemory: () => void;
-  onOpenUsage: () => void;
+  // 개인 지침/가져오기/토큰 사용량/메모리/화면(다크모드)을 탭으로 묶은
+  // 설정 창을 연다(기본 탭은 호출하는 쪽에서 정함).
+  onOpenSettings: () => void;
   onOpenSearch: () => void;
-  onOpenMemory: () => void;
   projects: Project[];
   onOpenProject: (id: string) => void;
   onNewProject: () => void;
@@ -674,59 +592,6 @@ export default function Sidebar({
   }, [collapsed]);
 
   const showFull = !collapsed && showFullContent;
-
-  // 설정 팝업(개인 지침 / 다른 AI에서 가져오기 메뉴)은 <aside>가 overflow-hidden이라
-  // (너비 트랜지션 텍스트 클리핑용) 그 안에 그냥 두면 사이드바 폭 밖으로 튀어나가는
-  // 부분이 잘려서 안 보인다. 그래서 document.body에 포탈로 띄우고, 버튼의
-  // getBoundingClientRect()로 위치만 계산해서 fixed로 앉힌다.
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState<{ left: number; bottom: number } | null>(null);
-  const settingsBtnRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    function onMouseDown(e: MouseEvent) {
-      const target = e.target as Node;
-      if (
-        settingsBtnRef.current?.contains(target) ||
-        menuRef.current?.contains(target)
-      ) {
-        return;
-      }
-      setMenuOpen(false);
-    }
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [menuOpen]);
-
-  function handleToggleSettingsMenu() {
-    if (!menuOpen && settingsBtnRef.current) {
-      const rect = settingsBtnRef.current.getBoundingClientRect();
-      setMenuPos({ left: rect.left, bottom: window.innerHeight - rect.top + 8 });
-    }
-    setMenuOpen((prev) => !prev);
-  }
-
-  // 다크/라이트 모드 전환 - 예전엔 채팅 화면 우측 상단에 따로 버튼이 있었는데,
-  // 지금은 여기 설정 메뉴 항목으로 옮겨왔다. <html> 클래스 토글 + localStorage
-  // 저장 방식은 기존 ThemeToggle 컴포넌트와 동일하다.
-  const [theme, setThemeState] = useState<"light" | "dark">("light");
-
-  useEffect(() => {
-    setThemeState(document.documentElement.classList.contains("dark") ? "dark" : "light");
-  }, []);
-
-  function toggleTheme() {
-    const next = theme === "dark" ? "light" : "dark";
-    setThemeState(next);
-    document.documentElement.classList.toggle("dark", next === "dark");
-    try {
-      localStorage.setItem("theme", next);
-    } catch {
-      // 프라이빗 브라우징 등에서 localStorage가 막혀있어도 화면 전환 자체는 되게 무시
-    }
-  }
 
   // "고정"/"프로젝트" 두 섹션에서 공유하는 프로젝트 한 줄 - 드래그로 순서
   // 변경(reorderKey), 드롭 시 채팅 편입(handleProjectDrop), 폴더 토글로
@@ -1067,8 +932,7 @@ export default function Sidebar({
       <div className="flex flex-col gap-1 border-t border-gray-200 px-2 py-2 dark:border-gray-800">
         <button
           type="button"
-          ref={settingsBtnRef}
-          onClick={handleToggleSettingsMenu}
+          onClick={onOpenSettings}
           title="설정"
           aria-label="설정"
           className={`flex h-9 shrink-0 items-center gap-2 rounded-lg text-sm text-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800 ${
@@ -1081,73 +945,6 @@ export default function Sidebar({
           {showFull && "설정"}
         </button>
       </div>
-
-      {menuOpen &&
-        menuPos &&
-        createPortal(
-          <div
-            ref={menuRef}
-            style={{ position: "fixed", left: menuPos.left, bottom: menuPos.bottom }}
-            className="z-50 w-48 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800"
-          >
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                onOpenPersonalInstruction();
-              }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-            >
-              <FileTextIcon />
-              개인 지침
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                onOpenImportMemory();
-              }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-            >
-              <ArrowDownToLineIcon />
-              다른 AI에서 가져오기
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                onOpenUsage();
-              }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-            >
-              <BarChartIcon />
-              토큰 사용량
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                onOpenMemory();
-              }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-            >
-              <BrainIcon />
-              메모리
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                toggleTheme();
-              }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-            >
-              {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-              {theme === "dark" ? "라이트 모드" : "다크 모드"}
-            </button>
-          </div>,
-          document.body
-        )}
 
       {convMenuId &&
         convMenuPos &&
