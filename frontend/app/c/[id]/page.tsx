@@ -377,7 +377,7 @@ export default function ConversationPage() {
           setSize(s);
         }}
       >
-        <main ref={mainRef} onScroll={handleMainScroll} className="flex-1 overflow-y-auto">
+        <main ref={mainRef} onScroll={handleMainScroll} className="scroll-thin flex-1 overflow-y-auto">
           <div className="mx-auto flex max-w-2xl flex-col gap-5 px-4 py-6">
             {messages.length === 0 && phase === "idle" && (
               <EmptyState onPick={(text) => setInput(text)} />

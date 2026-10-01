@@ -1,8 +1,23 @@
 "use client";
 
-import { DragEvent, useEffect, useRef, useState } from "react";
+import {
+  DragEvent,
+  MouseEvent as ReactMouseEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { Conversation, Project, ProjectColor } from "@/lib/types";
+
+// 마우스로 드래그해서 조절할 수 있는 사이드바 폭의 하한/상한, 그리고
+// 펼쳐졌을 때 기본값(예전에 고정값이던 260px를 그대로 기본값으로 둠).
+// 드래그해서 MIN보다 더 왼쪽으로 줄이면 접힘(collapsed) 상태로 넘어간다.
+const MIN_SIDEBAR_WIDTH = 200;
+const MAX_SIDEBAR_WIDTH = 420;
+const DEFAULT_SIDEBAR_WIDTH = 260;
+const COLLAPSED_WIDTH = 52;
+const SIDEBAR_WIDTH_STORAGE_KEY = "sidebarWidth";
 
 // 프로젝트 폴더 아이콘 색상 - "default"는 기존처럼 테마 기본 회색을 그대로 쓴다.
 const PROJECT_COLOR_CLASSES: Record<ProjectColor, string> = {
@@ -590,6 +605,87 @@ export default function Sidebar({
 
   const showFull = !collapsed && showFullContent;
 
+  // 사이드바 폭 드래그 조절 - 펼쳐진 상태에서만 의미가 있고(접힘은 항상
+  // COLLAPSED_WIDTH 고정), localStorage에 저장해서 새로고침해도 유지한다.
+  const [width, setWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [isResizing, setIsResizing] = useState(false);
+  const widthRef = useRef(width);
+  const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  // 드래그 도중 MIN보다 왼쪽으로 넘어가 이미 접힘 처리를 했는지 - 한 번의
+  // 드래그에서 여러 번 토글되지 않게 막는 플래그.
+  const collapsedDuringDragRef = useRef(false);
+
+  useEffect(() => {
+    widthRef.current = width;
+  }, [width]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+      const parsed = saved ? Number(saved) : NaN;
+      if (!Number.isNaN(parsed)) {
+        setWidth(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, parsed)));
+      }
+    } catch {
+      // localStorage 접근 불가(프라이빗 브라우징 등)해도 기본값으로 그냥 진행
+    }
+  }, []);
+
+  function handleResizeMouseDown(e: ReactMouseEvent<HTMLDivElement>) {
+    if (collapsed) return;
+    e.preventDefault();
+    resizeStartRef.current = { startX: e.clientX, startWidth: width };
+    collapsedDuringDragRef.current = false;
+    setIsResizing(true);
+  }
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    function handleMouseMove(e: MouseEvent) {
+      const start = resizeStartRef.current;
+      if (!start) return;
+      const newWidth = start.startWidth + (e.clientX - start.startX);
+
+      if (newWidth < MIN_SIDEBAR_WIDTH) {
+        // 최소 폭보다 더 줄이면 사이드바 자체를 접는다 - 리사이즈 핸들은
+        // 접힌 상태에선 안 보이지만, 드래그 자체는 document 레벨 리스너라
+        // 계속 추적되므로 마우스를 더 왼쪽으로 끌면 그대로 접힌 채 유지된다.
+        if (!collapsedDuringDragRef.current) {
+          collapsedDuringDragRef.current = true;
+          onToggleCollapsed();
+        }
+        return;
+      }
+
+      if (collapsedDuringDragRef.current) {
+        // 접힘 쪽으로 넘어갔다가 다시 최소 폭 이상으로 돌아오면 펼침 복구.
+        collapsedDuringDragRef.current = false;
+        onToggleCollapsed();
+      }
+
+      setWidth(Math.min(MAX_SIDEBAR_WIDTH, newWidth));
+    }
+
+    function handleMouseUp() {
+      setIsResizing(false);
+      resizeStartRef.current = null;
+      try {
+        localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(widthRef.current));
+      } catch {
+        // 저장 실패해도 이번 세션 안에서는 상태가 유지되니 무시
+      }
+    }
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isResizing]);
+
   // "고정"/"프로젝트" 두 섹션에서 공유하는 프로젝트 한 줄 - 드래그로 순서
   // 변경(reorderKey), 드롭 시 채팅 편입(handleProjectDrop), 폴더 토글로
   // 소속 채팅 펼치기, "⋮" 메뉴(고정)까지 전부 여기 하나로 묶는다.
@@ -707,31 +803,52 @@ export default function Sidebar({
 
   return (
     <aside
-      className={`flex shrink-0 flex-col overflow-hidden border-r border-gray-200 bg-gray-50 text-gray-700 transition-[width] duration-300 ease-in-out dark:border-transparent dark:bg-gray-900 dark:text-gray-200 ${
-        collapsed ? "w-[52px]" : "w-[260px]"
+      style={{ width: collapsed ? COLLAPSED_WIDTH : width }}
+      onClick={() => {
+        // 접힌 상태에서는 사이드바 아무 데나 눌러도 펼쳐지게 한다(로고
+        // 버튼 자체는 자기 onClick에서 stopPropagation하므로 중복 토글 안 됨).
+        if (collapsed) onToggleCollapsed();
+      }}
+      className={`relative flex shrink-0 flex-col overflow-hidden border-r border-gray-200 bg-gray-50 text-gray-700 ease-in-out dark:border-transparent dark:bg-gray-900 dark:text-gray-200 ${
+        isResizing ? "" : "transition-[width] duration-300"
       }`}
     >
-      <div className="flex h-9 items-center gap-2 px-2 pt-2">
-        {/* 로고 아이콘은 항상 같은 36x36 슬롯 - collapsed일 때만 클릭 가능한
+      {!collapsed && (
+        <div
+          onMouseDown={handleResizeMouseDown}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="사이드바 폭 조절"
+          className="absolute inset-y-0 right-0 z-10 w-1.5 -translate-x-1/2 cursor-col-resize select-none hover:bg-gray-300 dark:hover:bg-gray-700"
+        />
+      )}
+      <div className="flex h-11 items-center gap-2 px-2 pt-2">
+        {/* 로고 아이콘은 항상 같은 40x40 슬롯 - collapsed일 때만 클릭 가능한
             버튼(펼치기)이고, 펼쳐진 뒤에는 장식용으로만 쓴다(접기는 오른쪽의
             별도 버튼). 크기/위치가 두 상태에서 완전히 같아서 안 움직인다. */}
         {collapsed ? (
           <button
             type="button"
-            onClick={onToggleCollapsed}
+            onClick={(e) => {
+              // <aside>에도 "접혀있으면 눌러서 펼치기" onClick이 달려있어서,
+              // 여기서 안 막으면 버블링으로 두 번 토글되어 결국 그대로 접힌
+              // 채로 남는다.
+              e.stopPropagation();
+              onToggleCollapsed();
+            }}
             aria-label="사이드바 펼치기"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg hover:bg-gray-200 dark:hover:bg-gray-800"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-gray-200 dark:hover:bg-gray-800"
           >
-            <img src="/icons/asap.png" alt="ASAP" className="h-6 w-6 object-contain" />
+            <img src="/icons/asap.png" alt="ASAP" className="h-8 w-8 object-contain" />
           </button>
         ) : (
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center">
-            <img src="/icons/asap.png" alt="" className="h-6 w-6 object-contain" />
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center">
+            <img src="/icons/asap.png" alt="" className="h-8 w-8 object-contain" />
           </div>
         )}
         {showFull && (
           <>
-            <span className="flex-1 truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+            <span className="flex-1 truncate text-lg font-semibold text-gray-900 dark:text-gray-100">
               ASAP
             </span>
             <button
@@ -777,34 +894,132 @@ export default function Sidebar({
         </button>
       </div>
 
-      {/* "고정" 섹션 - 핀 된 프로젝트/채팅을 통합 순서(sort_order)로 보여준다.
-          핀 된 게 하나도 없으면 섹션 자체를 안 보여준다. */}
-      {showFull && pinnedItems.length > 0 && (
-        <div className="flex flex-col gap-1 border-t border-gray-200 px-2 py-2 dark:border-gray-800">
-          <button
-            type="button"
-            onClick={() => setPinnedSectionOpen((v) => !v)}
-            className="flex items-center gap-1 px-1 text-xs font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-          >
-            <ChevronIcon open={pinnedSectionOpen} />
-            고정
-          </button>
-          {pinnedSectionOpen && (
-            <ul className="space-y-0.5">
-              {pinnedItems.map((item) =>
-                item.type === "project" ? (
-                  (() => {
-                    const p = projects.find((proj) => proj.id === item.id);
-                    return p ? <div key={`proj:${p.id}`}>{renderProjectRow(p)}</div> : null;
-                  })()
+      {/* 컬랩스 여부와 상관없이 항상 렌더링되는 flex-1 스페이서 - 이게 있어야
+          아래 설정 버튼이 접힘/펼침 모두에서 사이드바 맨 아래에 고정된다.
+          "고정"/"프로젝트"/"채팅" 세 섹션을 전부 이 하나의 스크롤 영역
+          안에 두어서, 목록이 많아져도 섹션별로 따로따로가 아니라 사이드바
+          전체가 하나로 스크롤된다(위의 "새 채팅"/"채팅 검색" 버튼과 아래
+          "설정" 버튼만 스크롤 밖에 고정됨). */}
+      <nav className="scroll-thin flex-1 overflow-y-auto px-2 pb-2">
+        {showFull && (
+          <>
+            {/* "고정" 섹션 - 핀 된 프로젝트/채팅을 통합 순서(sort_order)로
+                보여준다. 핀 된 게 하나도 없으면 섹션 자체를 안 보여준다. */}
+            {pinnedItems.length > 0 && (
+              <div className="flex flex-col gap-1 py-2">
+                <button
+                  type="button"
+                  onClick={() => setPinnedSectionOpen((v) => !v)}
+                  className="flex items-center gap-1 px-1 text-xs font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                >
+                  <ChevronIcon open={pinnedSectionOpen} />
+                  고정
+                </button>
+                {pinnedSectionOpen && (
+                  <ul className="space-y-0.5">
+                    {pinnedItems.map((item) =>
+                      item.type === "project" ? (
+                        (() => {
+                          const p = projects.find((proj) => proj.id === item.id);
+                          return p ? <div key={`proj:${p.id}`}>{renderProjectRow(p)}</div> : null;
+                        })()
+                      ) : (
+                        (() => {
+                          const c = conversations.find((conv) => conv.id === item.id);
+                          if (!c) return null;
+                          const key = `conv:${c.id}`;
+                          return (
+                            <ConversationRow
+                              key={key}
+                              conversation={c}
+                              isActive={c.id === activeId}
+                              size="sm"
+                              isRenaming={renamingId === c.id}
+                              renameValue={renameValue}
+                              onRenameChange={setRenameValue}
+                              onCommitRename={() => commitRename(c.id)}
+                              onCancelRename={cancelRename}
+                              onSelect={() => onSelect(c.id)}
+                              onDragStart={(e) => handleConversationDragStart(e, c.id)}
+                              onOpenMenu={(el) => handleOpenConvMenu(c.id, el)}
+                              onReorderOver={handleReorderRowDragOver}
+                              onReorderDropTarget={(e) => handleReorderRowDrop(e, key)}
+                            />
+                          );
+                        })()
+                      )
+                    )}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {/* 프로젝트 섹션 - 드래그한 채팅을 놓을 수 있는 행들. */}
+            <div className="flex flex-col gap-1 border-t border-gray-200 py-2 dark:border-gray-800">
+              <div className="flex items-center justify-between px-1">
+                <button
+                  type="button"
+                  onClick={() => setProjectsSectionOpen((v) => !v)}
+                  className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                >
+                  <ChevronIcon open={projectsSectionOpen} />
+                  프로젝트
+                </button>
+                <button
+                  type="button"
+                  onClick={onNewProject}
+                  aria-label="새 프로젝트"
+                  className="flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                >
+                  <PlusIcon />
+                </button>
+              </div>
+              {projectsSectionOpen &&
+                (unpinnedProjects.length === 0 ? (
+                  <p className="px-1 py-1 text-xs text-gray-400 dark:text-gray-500">
+                    아직 프로젝트가 없습니다
+                  </p>
                 ) : (
-                  (() => {
-                    const c = conversations.find((conv) => conv.id === item.id);
-                    if (!c) return null;
-                    const key = `conv:${c.id}`;
-                    return (
+                  <ul className="space-y-0.5">{unpinnedProjects.map((p) => renderProjectRow(p))}</ul>
+                ))}
+            </div>
+
+            {/* 프로젝트에 편입된 채팅을 다시 여기로 드래그하면 해제(project_id
+                null)된다 - 프로젝트 행으로 옮기는 것과 대칭. 헤더 클릭으로
+                이 섹션 전체를 접고 펼 수도 있다. */}
+            <div className="flex flex-col gap-1 border-t border-gray-200 py-2 dark:border-gray-800">
+              <button
+                type="button"
+                onClick={() => setChatsSectionOpen((v) => !v)}
+                onDragEnter={(e) => {
+                  if (!e.dataTransfer.types.includes(CONVERSATION_DRAG_TYPE)) return;
+                  e.preventDefault();
+                  setDragOverUnassign(true);
+                }}
+                onDragOver={(e) => {
+                  if (!e.dataTransfer.types.includes(CONVERSATION_DRAG_TYPE)) return;
+                  e.preventDefault();
+                }}
+                onDragLeave={() => setDragOverUnassign(false)}
+                onDrop={handleUnassignDrop}
+                className={`flex w-full items-center gap-1 rounded-lg px-1 text-xs font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 ${
+                  dragOverUnassign ? "bg-gray-200 dark:bg-gray-800" : ""
+                }`}
+              >
+                <ChevronIcon open={chatsSectionOpen} />
+                채팅
+              </button>
+              {chatsSectionOpen && (
+                <>
+                  {unassignedConversations.length === 0 && (
+                    <p className="px-2 py-4 text-center text-xs text-gray-400 dark:text-gray-500">
+                      아직 채팅방이 없습니다
+                    </p>
+                  )}
+                  <ul className="space-y-0.5">
+                    {unassignedConversations.map((c) => (
                       <ConversationRow
-                        key={key}
+                        key={c.id}
                         conversation={c}
                         isActive={c.id === activeId}
                         size="sm"
@@ -816,108 +1031,12 @@ export default function Sidebar({
                         onSelect={() => onSelect(c.id)}
                         onDragStart={(e) => handleConversationDragStart(e, c.id)}
                         onOpenMenu={(el) => handleOpenConvMenu(c.id, el)}
-                        onReorderOver={handleReorderRowDragOver}
-                        onReorderDropTarget={(e) => handleReorderRowDrop(e, key)}
                       />
-                    );
-                  })()
-                )
+                    ))}
+                  </ul>
+                </>
               )}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {/* 프로젝트 섹션 - 드래그한 채팅을 놓을 수 있는 행들. collapsed일 땐
-          채팅 목록과 동일하게(showFull일 때만) 보여준다. */}
-      {showFull && (
-        <div className="flex flex-col gap-1 border-t border-gray-200 px-2 py-2 dark:border-gray-800">
-          <div className="flex items-center justify-between px-1">
-            <button
-              type="button"
-              onClick={() => setProjectsSectionOpen((v) => !v)}
-              className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-            >
-              <ChevronIcon open={projectsSectionOpen} />
-              프로젝트
-            </button>
-            <button
-              type="button"
-              onClick={onNewProject}
-              aria-label="새 프로젝트"
-              className="flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-            >
-              <PlusIcon />
-            </button>
-          </div>
-          {projectsSectionOpen &&
-            (unpinnedProjects.length === 0 ? (
-              <p className="px-1 py-1 text-xs text-gray-400 dark:text-gray-500">
-                아직 프로젝트가 없습니다
-              </p>
-            ) : (
-              <ul className="space-y-0.5">{unpinnedProjects.map((p) => renderProjectRow(p))}</ul>
-            ))}
-        </div>
-      )}
-
-      {/* 컬랩스 여부와 상관없이 항상 렌더링되는 flex-1 스페이서 - 이게 있어야
-          아래 설정 버튼이 접힘/펼침 모두에서 사이드바 맨 아래에 고정된다.
-          목록 내용 자체는 기존과 동일하게 showFull일 때만 채운다. */}
-      <nav className="flex-1 overflow-y-auto px-2 pb-2">
-        {showFull && (
-          <>
-            {/* 프로젝트에 편입된 채팅을 다시 여기로 드래그하면 해제(project_id
-                null)된다 - 프로젝트 행으로 옮기는 것과 대칭. 헤더 클릭으로
-                이 섹션 전체를 접고 펼 수도 있다. */}
-            <button
-              type="button"
-              onClick={() => setChatsSectionOpen((v) => !v)}
-              onDragEnter={(e) => {
-                if (!e.dataTransfer.types.includes(CONVERSATION_DRAG_TYPE)) return;
-                e.preventDefault();
-                setDragOverUnassign(true);
-              }}
-              onDragOver={(e) => {
-                if (!e.dataTransfer.types.includes(CONVERSATION_DRAG_TYPE)) return;
-                e.preventDefault();
-              }}
-              onDragLeave={() => setDragOverUnassign(false)}
-              onDrop={handleUnassignDrop}
-              className={`mb-1 flex w-full items-center gap-1 rounded-lg px-1 py-1 text-xs font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 ${
-                dragOverUnassign ? "bg-gray-200 dark:bg-gray-800" : ""
-              }`}
-            >
-              <ChevronIcon open={chatsSectionOpen} />
-              채팅
-            </button>
-            {chatsSectionOpen && (
-              <>
-                {unassignedConversations.length === 0 && (
-                  <p className="px-2 py-4 text-center text-xs text-gray-400 dark:text-gray-500">
-                    아직 채팅방이 없습니다
-                  </p>
-                )}
-                <ul className="space-y-0.5">
-                  {unassignedConversations.map((c) => (
-                    <ConversationRow
-                      key={c.id}
-                      conversation={c}
-                      isActive={c.id === activeId}
-                      size="sm"
-                      isRenaming={renamingId === c.id}
-                      renameValue={renameValue}
-                      onRenameChange={setRenameValue}
-                      onCommitRename={() => commitRename(c.id)}
-                      onCancelRename={cancelRename}
-                      onSelect={() => onSelect(c.id)}
-                      onDragStart={(e) => handleConversationDragStart(e, c.id)}
-                      onOpenMenu={(el) => handleOpenConvMenu(c.id, el)}
-                    />
-                  ))}
-                </ul>
-              </>
-            )}
+            </div>
           </>
         )}
       </nav>

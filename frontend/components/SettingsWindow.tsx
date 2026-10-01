@@ -774,7 +774,7 @@ export default function SettingsWindow({
         className="flex h-[90vh] w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-xl dark:bg-gray-900"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex w-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-gray-100 bg-gray-50/70 p-2 dark:border-gray-800 dark:bg-gray-950/40">
+        <div className="scroll-thin flex w-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-gray-100 bg-gray-50/70 p-2 dark:border-gray-800 dark:bg-gray-950/40">
           <h2 className="mb-2 px-2 pt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">설정</h2>
           {TABS.map((tab) => {
             const Icon = tab.icon;
@@ -796,7 +796,7 @@ export default function SettingsWindow({
           })}
         </div>
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="scroll-thin relative min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <button
             type="button"
             onClick={onClose}

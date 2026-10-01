@@ -553,7 +553,7 @@ export default function ProjectPage() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+          <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-5">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
               채팅 목록
             </h3>
@@ -587,7 +587,7 @@ export default function ProjectPage() {
 
         {/* 오른쪽 - 지침/색상/참고자료(용량 포함)/메모리 바로가기 */}
         <div
-          className="relative min-h-0 overflow-y-auto px-5 py-5"
+          className="scroll-thin relative min-h-0 overflow-y-auto px-5 py-5"
           onDragEnter={handleRefFileDragEnter}
           onDragOver={handleRefFileDragOver}
           onDragLeave={handleRefFileDragLeave}

@@ -6,3 +6,36 @@ html,
 body {
   height: 100%;
 }
+
+/* 기본 브라우저 스크롤바는 다크모드에서 트랙/썸이 전부 흰색에 가까워서
+   사이드바처럼 어두운 배경 위에서는 너무 튀고, 채팅창처럼 흰 배경 위
+   스크롤바는(라이트 기준) 연한 회색이라 거의 안 보인다. 라이트/다크 둘 다
+   적당히 보이는 톤으로 직접 칠한다 - 스크롤이 필요한 주요 영역(사이드바
+   목록, 채팅 메시지 영역 등)에 className="scroll-thin"으로 적용. */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(203 213 225) transparent; /* slate-300 */
+}
+.dark .scroll-thin {
+  scrollbar-color: rgb(100 116 139) transparent; /* slate-500 */
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background-color: rgb(203 213 225); /* slate-300 */
+  border-radius: 9999px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(148 163 184); /* slate-400 */
+}
+.dark .scroll-thin::-webkit-scrollbar-thumb {
+  background-color: rgb(100 116 139); /* slate-500 */
+}
+.dark .scroll-thin::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(148 163 184); /* slate-400 */
+}
