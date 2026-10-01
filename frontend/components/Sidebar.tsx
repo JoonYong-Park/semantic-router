@@ -180,7 +180,6 @@ function TrashIcon() {
 function ConversationRow({
   conversation,
   isActive,
-  disabled,
   size,
   isRenaming,
   renameValue,
@@ -195,7 +194,6 @@ function ConversationRow({
 }: {
   conversation: Conversation;
   isActive: boolean;
-  disabled: boolean;
   size: "sm" | "xs";
   isRenaming: boolean;
   renameValue: string;
@@ -260,9 +258,8 @@ function ConversationRow({
       ) : (
         <button
           type="button"
-          onClick={() => !disabled && onSelect()}
-          disabled={disabled}
-          className={`min-w-0 flex-1 truncate rounded-lg ${padding} text-left ${textSize} disabled:opacity-40 ${
+          onClick={onSelect}
+          className={`min-w-0 flex-1 truncate rounded-lg ${padding} text-left ${textSize} ${
             isActive ? "text-gray-900 dark:text-white" : "text-gray-600 dark:text-gray-300"
           }`}
         >
@@ -690,7 +687,6 @@ export default function Sidebar({
                   key={c.id}
                   conversation={c}
                   isActive={c.id === activeId}
-                  disabled={disabled}
                   size="xs"
                   isRenaming={renamingId === c.id}
                   renameValue={renameValue}
@@ -754,10 +750,9 @@ export default function Sidebar({
         <button
           type="button"
           onClick={onNew}
-          disabled={disabled}
           title="새 채팅"
           aria-label="새 채팅"
-          className={`flex h-9 shrink-0 items-center gap-2 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-40 dark:hover:bg-gray-800 ${
+          className={`flex h-9 shrink-0 items-center gap-2 rounded-lg text-sm hover:bg-gray-200 dark:hover:bg-gray-800 ${
             collapsed ? "w-9" : "w-full border border-gray-300 pr-3 dark:border-gray-700"
           }`}
         >
@@ -812,7 +807,6 @@ export default function Sidebar({
                         key={key}
                         conversation={c}
                         isActive={c.id === activeId}
-                        disabled={disabled}
                         size="sm"
                         isRenaming={renamingId === c.id}
                         renameValue={renameValue}
@@ -910,7 +904,6 @@ export default function Sidebar({
                       key={c.id}
                       conversation={c}
                       isActive={c.id === activeId}
-                      disabled={disabled}
                       size="sm"
                       isRenaming={renamingId === c.id}
                       renameValue={renameValue}

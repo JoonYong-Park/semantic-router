@@ -494,7 +494,12 @@ export async function streamMessage(
     onChunk: (content: string) => void;
     onDone: () => void;
     onError: (message: string) => void;
-  }
+  },
+  // 사용자가 스트리밍 도중 다른 채팅방으로 넘어가는 것 자체는 허용하되
+  // (더 이상 안 막음), 그 화면을 완전히 떠나거나 다른 채팅으로 바꿀 때
+  // 더는 아무도 안 보는 응답을 서버에 계속 만들게 두지 않도록 호출
+  // 쪽에서 끊을 수 있게 둔다.
+  signal?: AbortSignal
 ): Promise<void> {
   let res: Response;
   try {
@@ -502,8 +507,10 @@ export async function streamMessage(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return;
     handlers.onError("서버에 연결할 수 없습니다.");
     return;
   }
@@ -522,7 +529,16 @@ export async function streamMessage(
   let buffer = "";
 
   while (true) {
-    const { done, value } = await reader.read();
+    let done: boolean;
+    let value: Uint8Array | undefined;
+    try {
+      ({ done, value } = await reader.read());
+    } catch (err) {
+      // 호출 쪽이 signal.abort()로 끊은 경우(다른 채팅으로 이동 등) - 아무도
+      // 더 안 보는 응답이니 에러로 취급하지 않고 조용히 중단한다.
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      throw err;
+    }
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });

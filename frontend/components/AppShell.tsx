@@ -97,7 +97,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   function handleNewChat() {
-    if (isStreaming) return;
+    // 스트리밍 중에도 다른 채팅(또는 새 채팅)으로 이동할 수 있어야 하므로
+    // 더 이상 isStreaming으로 막지 않는다 - 떠나는 화면의 스트림 정리는
+    // 그 화면(주로 /c/[id]) 쪽에서 AbortController로 처리한다.
     router.push("/");
   }
 

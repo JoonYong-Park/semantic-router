@@ -48,7 +48,7 @@ logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
-MAX_CONTEXT_TOKENS = 4000
+MAX_CONTEXT_TOKENS = 16000
 
 # 업로드 응답은 추출 완료를 기다리지 않고 바로 돌아오므로("pending" 상태로
 # 전송 버튼을 즉시 누를 수 있게 하기 위함, attachments.py 참고), 실제 모델
@@ -290,7 +290,12 @@ async def _build_history(
         # 기준(token_count 컬럼 또는 tiktoken 근사)으로 계산한다 - 슬라이딩
         # 윈도우 크기 산정 로직 자체는 첨부파일 도입으로 바꾸지 않는다.
         tokens = msg.token_count or count_tokens(msg.content)
-        if total + tokens > MAX_CONTEXT_TOKENS:
+        # 가장 최근 메시지(이 반복문이 역순이라 첫 번째로 보는 것) 혼자서도
+        # MAX_CONTEXT_TOKENS를 넘는 경우(길게 답변한 직후 턴 등) 여기서
+        # 바로 break해버리면 selected가 통째로 비어서 "방금 나눈 대화"를
+        # 전혀 기억 못 하는 현상이 난다. 바로 직전 턴 하나는 예산을 넘든 말든
+        # 무조건 포함시키고, 그보다 더 과거 메시지들에 대해서만 예산을 적용한다.
+        if selected and total + tokens > MAX_CONTEXT_TOKENS:
             break
         selected.append(msg)
         total += tokens
@@ -552,30 +557,43 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
 
             # 5) 1차 호출 - 라우팅된 spec 모델 자신이 웹 검색 필요 여부를 판단한다
             # (ChatGPT/Claude가 실제로 쓰는 방식과 동일 - 판단 전용 별도 모델 없음).
-            # 비스트리밍으로 tools를 실어 보내고, 결과에 따라 갈린다:
-            #   - 도구 호출 없이 바로 텍스트 → 이미 완성된 답이므로 재호출 없이
-            #     그 텍스트를 그대로 하나의 chunk로 스트리밍 형태만 맞춰 전달.
-            #   - 검색 요청 → Tavily로 검색 → 결과를 history에 얹어 같은 spec으로
-            #     2차 호출(이번엔 stream_model()로 실제 스트리밍).
+            # tools를 실어도 스트리밍으로 받아서, 검색 없이 바로 답하는 가장 흔한
+            # 경우에도 토큰 단위로 실시간 전달된다(예전엔 이 1차 호출이
+            # 비스트리밍이라 완성된 텍스트가 한 번에 "툭" 나타났었음). 결과에
+            # 따라 갈린다:
+            #   - 텍스트 조각이 옴 → 그대로 실시간 전달(진짜 스트리밍).
+            #   - 검색 요청이 옴(텍스트를 하나도 안 보낸 채로) → Tavily로 검색 →
+            #     결과를 history에 얹어 같은 spec으로 2차 호출(stream_model()).
+            #   - 드물게 텍스트를 일부 보낸 뒤에 검색 요청이 온 경우(모델이
+            #     "검색해볼게요" 식으로 운을 뗀 뒤 도구를 호출하는 경우) - 이미
+            #     사용자에게 보여준 텍스트를 2차 호출의 독립된 답변과 이어붙이면
+            #     서로 다른 두 답이 뒤섞여 보이므로, 이 경우는 검색을 포기하고
+            #     지금까지 나온 텍스트를 그대로 최종 답으로 둔다.
             full_response = ""
             usage: dict[str, int] = {}
             web_search_used = False
             web_search_query: str | None = None
             try:
-                tool_result = await providers.call_model_with_tools(
-                    spec, history, reference_block_count
-                )
+                tool_call_info: dict | None = None
+                async for event in providers.stream_model_with_tools(
+                    spec, history, usage, reference_block_count
+                ):
+                    if event["type"] == "text":
+                        full_response += event["content"]
+                        yield _sse({"type": "chunk", "content": event["content"]})
+                    elif event["type"] == "tool_call":
+                        tool_call_info = event
 
-                if tool_result.wants_search and tool_result.search_query:
+                if tool_call_info and not full_response:
                     web_search_used = True
-                    web_search_query = tool_result.search_query
-                    yield _sse({"type": "searching", "query": tool_result.search_query})
+                    web_search_query = tool_call_info["query"]
+                    yield _sse({"type": "searching", "query": tool_call_info["query"]})
 
                     search_results = await providers.tavily_search(
-                        tool_result.search_query,
+                        tool_call_info["query"],
                         max_results=5,
-                        time_range=tool_result.time_range,
-                        site_hint=tool_result.site_hint,
+                        time_range=tool_call_info["time_range"],
+                        site_hint=tool_call_info["site_hint"],
                     )
                     # 검색 실패(빈 결과)해도 에러 내지 않고 그냥 검색 결과 없이 계속 진행.
                     if search_results:
@@ -588,7 +606,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                             {
                                 "role": "system",
                                 "content": (
-                                    f"[웹 검색 결과: {tool_result.search_query}]\n{results_text}\n\n"
+                                    f"[웹 검색 결과: {tool_call_info['query']}]\n{results_text}\n\n"
                                     "위 검색 결과를 참고해서 답변해. 답변 마지막에 실제로 "
                                     "참고한 출처만 아래 형식으로 표시해 (참고 안 한 결과는 빼고, "
                                     "위 검색 결과에 없는 URL은 지어내지 마):\n"
@@ -597,8 +615,11 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                             }
                         ]
 
+                    # 1차 호출(판단) 토큰은 이미 usage에 쌓여 있으니, 2차 호출은
+                    # 같은 dict에 이어서 쌓이지 않도록 별도로 받아서 합산한다.
+                    second_call_usage: dict[str, int] = {}
                     async for chunk in providers.stream_model(
-                        spec, history, usage, reference_block_count
+                        spec, history, second_call_usage, reference_block_count
                     ):
                         full_response += chunk
                         yield _sse({"type": "chunk", "content": chunk})
@@ -606,15 +627,11 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     # 이번 턴은 API 호출이 두 번(판단 호출 + 검색 후 답변 호출)이라,
                     # 실제 청구 토큰도 둘을 합쳐야 이번 턴의 진짜 사용량이 된다.
                     usage["input_tokens"] = (usage.get("input_tokens") or 0) + (
-                        tool_result.usage.get("input_tokens") or 0
+                        second_call_usage.get("input_tokens") or 0
                     )
                     usage["output_tokens"] = (usage.get("output_tokens") or 0) + (
-                        tool_result.usage.get("output_tokens") or 0
+                        second_call_usage.get("output_tokens") or 0
                     )
-                else:
-                    full_response = tool_result.direct_text or ""
-                    yield _sse({"type": "chunk", "content": full_response})
-                    usage = dict(tool_result.usage)
             except Exception as exc:  # noqa: BLE001
                 # 실패한 턴은 assistant 메시지를 저장하지 않고 그냥 끝나기 때문에,
                 # 나중에 DB만 봐서는 왜 응답이 없는지 알 수 없다 - 여기서 로그로

@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 import httpx
@@ -234,24 +233,6 @@ def _prepare_openai_messages(messages: list[dict]) -> list[dict]:
     ]
 
 
-@dataclass
-class ToolCallResult:
-    """call_model_with_tools()의 회사별 응답을 통일한 내부 표현.
-
-    wants_search=True면 search_query(+time_range)가 채워지고 direct_text는 None,
-    False면 반대 (도구 호출 없이 바로 텍스트로 답한 경우).
-    usage는 이 1차 호출 자체가 실제로 쓴 토큰({"input_tokens","output_tokens"}) -
-    검색 후 2차 스트리밍 호출의 토큰과 합산해야 이번 턴의 총 사용량이 된다.
-    """
-
-    wants_search: bool
-    search_query: str | None
-    direct_text: str | None
-    time_range: str | None = None
-    site_hint: str | None = None
-    usage: dict[str, int] = field(default_factory=dict)
-
-
 async def call_model(spec: ModelSpec, message: str) -> str:
     api_key = API_KEYS.get(spec.company, "")
     if not api_key:
@@ -293,15 +274,27 @@ async def call_model(spec: ModelSpec, message: str) -> str:
         return data["choices"][0]["message"]["content"]
 
 
-async def call_model_with_tools(
+async def stream_model_with_tools(
     spec: ModelSpec,
     messages: list[dict[str, str]],
+    usage: dict[str, int] | None = None,
     reference_block_count: int | None = None,
-) -> ToolCallResult:
-    """웹 검색 tool을 실어서 1차(비스트리밍) 호출 - 라우팅된 spec 모델 자신이
-    검색이 필요한지 판단한다(ChatGPT/Claude가 실제로 쓰는 방식과 동일, 판단
-    전용 별도 모델은 안 씀). stream_model()과 달리 tools를 받고 비스트리밍이라
-    별도 함수로 뒀다.
+) -> AsyncIterator[dict]:
+    """웹 검색 tool을 실어서 1차 호출 - 라우팅된 spec 모델 자신이 검색이
+    필요한지 판단한다(ChatGPT/Claude가 실제로 쓰는 방식과 동일, 판단 전용
+    별도 모델은 안 씀). 예전엔 이 1차 호출이 비스트리밍이라 "검색 없이 바로
+    답하는" 가장 흔한 경우에도 완성된 텍스트를 한 덩어리로만 보여줬는데,
+    여기서는 tools를 실어도 stream=True로 받아서 그 경우에도 실제로
+    토큰 단위 스트리밍이 되게 한다.
+
+    yield하는 이벤트:
+      {"type": "text", "content": str}      - 직접 답변 텍스트 조각(실시간)
+      {"type": "tool_call", "query": str, "time_range": str|None, "site_hint": str|None}
+        - 검색이 필요하다고 판단한 경우(텍스트 조각 없이 한 번만 옴)
+
+    usage: stream_model()과 동일한 관례 - 넘기면 이 1차 호출 자체가 쓴
+    토큰을 이 dict에 채워 넣는다. 검색 경로면 호출자가 2차 stream_model()
+    호출의 토큰과 합산해야 이번 턴의 총 사용량이 된다.
 
     reference_block_count: 프로젝트 참고자료가 붙은 대화면, 첫 번째 메시지
     맨 앞 몇 개 블록이 참고자료인지(Anthropic 캐싱 2번째 브레이크포인트용).
@@ -313,9 +306,8 @@ async def call_model_with_tools(
 
     tools = build_tools_for_company(spec.company)
 
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         if spec.company == "anthropic":
-            # stream_model()과 동일하게 system role은 최상위 파라미터로 분리.
             system_texts, chat_messages = _prepare_anthropic_messages(
                 messages, reference_block_count
             )
@@ -325,100 +317,155 @@ async def call_model_with_tools(
                 "max_tokens": MAX_OUTPUT_TOKENS,
                 "messages": chat_messages,
                 "tools": tools,
+                "stream": True,
             }
             if system_texts:
                 payload["system"] = "\n\n".join(system_texts)
 
-            resp = await client.post(
+            async with client.stream(
+                "POST",
                 ANTHROPIC_URL,
                 headers={
                     "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                 },
                 json=payload,
-            )
-            _raise_for_status_logged(resp)
-            data = resp.json()
+            ) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    resp_for_raise = httpx.Response(
+                        resp.status_code, content=body, request=resp.request
+                    )
+                    _raise_for_status_logged(resp_for_raise)
 
-            raw_usage = data.get("usage", {})
-            usage = {
-                "input_tokens": raw_usage.get("input_tokens", 0),
-                "output_tokens": raw_usage.get("output_tokens", 0),
-            }
+                # tool_use 블록의 input은 partial_json 조각으로 쪼개져 오므로
+                # content_block_stop에서 한 번에 파싱할 수 있게 모아둔다.
+                current_block_type: str | None = None
+                tool_json_buffer = ""
 
-            tool_use = next(
-                (b for b in data["content"] if b.get("type") == "tool_use"), None
-            )
-            if tool_use is not None:
-                tool_input = tool_use.get("input", {})
-                return ToolCallResult(
-                    wants_search=True,
-                    search_query=tool_input.get("query"),
-                    direct_text=None,
-                    time_range=_normalize_time_range(tool_input.get("time_range")),
-                    site_hint=_normalize_site_hint(tool_input.get("site_hint")),
-                    usage=usage,
-                )
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    event = json.loads(line[len("data: ") :])
+                    event_type = event.get("type")
 
-            texts = [b["text"] for b in data["content"] if b.get("type") == "text"]
-            return ToolCallResult(
-                wants_search=False,
-                search_query=None,
-                direct_text="".join(texts),
-                usage=usage,
-            )
+                    if event_type == "message_start" and usage is not None:
+                        input_tokens = event.get("message", {}).get("usage", {}).get(
+                            "input_tokens"
+                        )
+                        if input_tokens is not None:
+                            usage["input_tokens"] = input_tokens
+                    elif event_type == "content_block_start":
+                        current_block_type = event.get("content_block", {}).get("type")
+                        tool_json_buffer = ""
+                    elif event_type == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            yield {"type": "text", "content": delta["text"]}
+                        elif delta.get("type") == "input_json_delta":
+                            tool_json_buffer += delta.get("partial_json", "")
+                    elif event_type == "content_block_stop":
+                        if current_block_type == "tool_use":
+                            try:
+                                args = json.loads(tool_json_buffer or "{}")
+                            except json.JSONDecodeError:
+                                args = {}
+                            query = args.get("query")
+                            if query:
+                                yield {
+                                    "type": "tool_call",
+                                    "query": query,
+                                    "time_range": _normalize_time_range(
+                                        args.get("time_range")
+                                    ),
+                                    "site_hint": _normalize_site_hint(
+                                        args.get("site_hint")
+                                    ),
+                                }
+                        current_block_type = None
+                    elif event_type == "message_delta" and usage is not None:
+                        output_tokens = event.get("usage", {}).get("output_tokens")
+                        if output_tokens is not None:
+                            usage["output_tokens"] = output_tokens
+            return
 
-        # openai / google - 완전히 동일한 tools/tool_calls 포맷
+        # openai / google - 완전히 동일한 tools/tool_calls + SSE 포맷
         url = OPENAI_URL if spec.company == "openai" else GOOGLE_URL
         payload: dict = {
             "model": spec.model_id,
             "messages": _prepare_openai_messages(messages),
             "tools": tools,
             "tool_choice": "auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if spec.company == "openai":
             # reasoning 모델은 Chat Completions에서 tools를 쓰려면 reasoning_effort를
             # "none"으로 꺼야 한다 (실제로 400 에러를 받아 확인함 - 안 끄면
             # "Function tools with reasoning_effort are not supported ..." 에러).
             payload["reasoning_effort"] = "none"
-        resp = await client.post(
+
+        async with client.stream(
+            "POST",
             url,
             headers={"Authorization": f"Bearer {api_key}"},
             json=payload,
-        )
-        _raise_for_status_logged(resp)
-        data = resp.json()
-
-        raw_usage = data.get("usage", {})
-        usage = {
-            "input_tokens": raw_usage.get("prompt_tokens", 0),
-            "output_tokens": raw_usage.get("completion_tokens", 0),
-        }
-
-        message = data["choices"][0]["message"]
-        tool_calls = message.get("tool_calls") or []
-        if tool_calls:
-            try:
-                args = json.loads(tool_calls[0]["function"]["arguments"])
-                query = args.get("query")
-            except (json.JSONDecodeError, AttributeError):
-                args, query = {}, None
-            if query:
-                return ToolCallResult(
-                    wants_search=True,
-                    search_query=query,
-                    direct_text=None,
-                    time_range=_normalize_time_range(args.get("time_range")),
-                    site_hint=_normalize_site_hint(args.get("site_hint")),
-                    usage=usage,
+        ) as resp:
+            if resp.status_code >= 400:
+                body = await resp.aread()
+                resp_for_raise = httpx.Response(
+                    resp.status_code, content=body, request=resp.request
                 )
+                _raise_for_status_logged(resp_for_raise)
 
-        return ToolCallResult(
-            wants_search=False,
-            search_query=None,
-            direct_text=message.get("content") or "",
-            usage=usage,
-        )
+            # tool_calls도 arguments가 여러 청크로 쪼개져 오므로 index별로 모은다
+            # (우리는 tool을 하나만 등록해서 index=0 하나만 쓰면 되지만, 공급사가
+            # 그래도 index를 붙여서 보내므로 그대로 따라간다).
+            tool_call_buffers: dict[int, dict[str, str]] = {}
+
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                raw_payload = line[len("data: ") :]
+                if raw_payload == "[DONE]":
+                    break
+                chunk = json.loads(raw_payload)
+
+                if usage is not None and chunk.get("usage"):
+                    usage["input_tokens"] = chunk["usage"].get("prompt_tokens")
+                    usage["output_tokens"] = chunk["usage"].get("completion_tokens")
+
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = choice.get("delta", {})
+
+                content = delta.get("content")
+                if content:
+                    yield {"type": "text", "content": content}
+
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index", 0)
+                    buf = tool_call_buffers.setdefault(idx, {"arguments": ""})
+                    fn = tc.get("function") or {}
+                    if fn.get("arguments"):
+                        buf["arguments"] += fn["arguments"]
+
+                if choice.get("finish_reason") == "tool_calls":
+                    buf = tool_call_buffers.get(0, {"arguments": "{}"})
+                    try:
+                        args = json.loads(buf["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    query = args.get("query")
+                    if query:
+                        yield {
+                            "type": "tool_call",
+                            "query": query,
+                            "time_range": _normalize_time_range(args.get("time_range")),
+                            "site_hint": _normalize_site_hint(args.get("site_hint")),
+                        }
 
 
 def _normalize_time_range(value: str | None) -> str | None:
