@@ -34,6 +34,9 @@ export interface Conversation {
   id: string;
   title: string | null;
   updated_at: string;
+  project_id: string | null;
+  pinned: boolean;
+  sort_order: number;
 }
 
 export interface DBMessage {
@@ -134,6 +137,65 @@ export interface SearchResult {
   title: string | null;
   snippet: string;
   matched_role: "user" | "assistant";
+}
+
+// --- 프로젝트 폴더 ---
+
+export interface Project {
+  id: string;
+  name: string;
+  instruction: string | null;
+  max_capacity_bytes: number;
+  pinned: boolean;
+  sort_order: number;
+  color: ProjectColor;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ProjectColor =
+  | "default"
+  | "red"
+  | "orange"
+  | "yellow"
+  | "green"
+  | "blue"
+  | "purple"
+  | "pink";
+
+export interface ProjectFile {
+  id: string;
+  original_name: string;
+  mime_type: string;
+  size_bytes: number;
+  extraction_status: "pending" | "done" | "failed";
+  created_at: string;
+}
+
+export interface ProjectFilesOut {
+  files: ProjectFile[];
+  used_bytes: number;
+  max_bytes: number;
+  percent: number;
+}
+
+// --- 메모리 조회(전역 + 프로젝트별) ---
+
+export interface MemoryFact {
+  id: string;
+  fact: string;
+  created_at: string;
+}
+
+export interface ProjectMemoryGroup {
+  project_id: string;
+  project_name: string;
+  memories: MemoryFact[];
+}
+
+export interface MemoryOverview {
+  global: MemoryFact[];
+  projects: ProjectMemoryGroup[];
 }
 
 export type StreamEvent =

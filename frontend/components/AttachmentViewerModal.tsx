@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  AttachmentKind,
   AttachmentTable,
   attachmentFileUrl,
   fetchAttachmentPreviewPdf,
@@ -79,18 +80,20 @@ function Spinner() {
 
 function ErrorMessage({
   message,
-  conversationId,
+  kind,
+  parentId,
   attachment,
 }: {
   message: string;
-  conversationId: string;
+  kind: AttachmentKind;
+  parentId: string;
   attachment: ViewerAttachment;
 }) {
   return (
     <div className="flex flex-col items-center gap-3 text-center text-sm text-gray-500 dark:text-gray-400">
       <p>{message}</p>
       <a
-        href={attachmentFileUrl(conversationId, attachment.id, true)}
+        href={attachmentFileUrl(kind, parentId, attachment.id, true)}
         className="flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800"
       >
         <DownloadIcon />
@@ -171,14 +174,16 @@ function TableView({ table }: { table: AttachmentTable }) {
 }
 
 function ViewerBody({
-  conversationId,
+  kind,
+  parentId,
   attachment,
 }: {
-  conversationId: string;
+  kind: AttachmentKind;
+  parentId: string;
   attachment: ViewerAttachment;
 }) {
-  const kind = viewerKind(attachment.mime_type, attachment.original_name);
-  const [loading, setLoading] = useState(kind !== "image" && kind !== "unsupported");
+  const viewKind = viewerKind(attachment.mime_type, attachment.original_name);
+  const [loading, setLoading] = useState(viewKind !== "image" && viewKind !== "unsupported");
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState<{ text: string; truncated: boolean } | null>(null);
   const [table, setTable] = useState<AttachmentTable | null>(null);
@@ -190,14 +195,14 @@ function ViewerBody({
 
     async function load() {
       try {
-        if (kind === "txt" || kind === "md" || kind === "hwp") {
-          const result = await getAttachmentText(conversationId, attachment.id);
+        if (viewKind === "txt" || viewKind === "md" || viewKind === "hwp") {
+          const result = await getAttachmentText(kind, parentId, attachment.id);
           if (!cancelled) setText(result);
-        } else if (kind === "table") {
-          const result = await getAttachmentTable(conversationId, attachment.id);
+        } else if (viewKind === "table") {
+          const result = await getAttachmentTable(kind, parentId, attachment.id);
           if (!cancelled) setTable(result);
-        } else if (kind === "docx-pptx") {
-          const url = await fetchAttachmentPreviewPdf(conversationId, attachment.id);
+        } else if (viewKind === "docx-pptx") {
+          const url = await fetchAttachmentPreviewPdf(kind, parentId, attachment.id);
           createdBlobUrl = url;
           if (!cancelled) setPdfBlobUrl(url);
         }
@@ -210,7 +215,7 @@ function ViewerBody({
       }
     }
 
-    if (kind === "image" || kind === "pdf" || kind === "unsupported") {
+    if (viewKind === "image" || viewKind === "pdf" || viewKind === "unsupported") {
       setLoading(false);
     } else {
       load();
@@ -221,14 +226,14 @@ function ViewerBody({
       if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, attachment.id, kind]);
+  }, [kind, parentId, attachment.id, viewKind]);
 
-  if (kind === "image") {
+  if (viewKind === "image") {
     return (
       <div className="flex h-full items-center justify-center overflow-auto">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={attachmentFileUrl(conversationId, attachment.id)}
+          src={attachmentFileUrl(kind, parentId, attachment.id)}
           alt={attachment.original_name}
           className="max-h-full max-w-full object-contain"
         />
@@ -236,22 +241,23 @@ function ViewerBody({
     );
   }
 
-  if (kind === "pdf") {
+  if (viewKind === "pdf") {
     return (
       <iframe
-        src={attachmentFileUrl(conversationId, attachment.id)}
+        src={attachmentFileUrl(kind, parentId, attachment.id)}
         title={attachment.original_name}
         className="h-full w-full rounded-lg border border-gray-200 dark:border-gray-700"
       />
     );
   }
 
-  if (kind === "unsupported") {
+  if (viewKind === "unsupported") {
     return (
       <div className="flex h-full items-center justify-center">
         <ErrorMessage
           message="미리보기를 지원하지 않는 형식입니다."
-          conversationId={conversationId}
+          kind={kind}
+          parentId={parentId}
           attachment={attachment}
         />
       </div>
@@ -261,7 +267,7 @@ function ViewerBody({
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
-        {kind === "docx-pptx" ? (
+        {viewKind === "docx-pptx" ? (
           <div className="flex flex-col items-center gap-2 text-sm text-gray-400 dark:text-gray-500">
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-500 dark:border-gray-700 dark:border-t-gray-400" />
             <span>변환 중...</span>
@@ -276,12 +282,12 @@ function ViewerBody({
   if (error) {
     return (
       <div className="flex h-full items-center justify-center">
-        <ErrorMessage message={error} conversationId={conversationId} attachment={attachment} />
+        <ErrorMessage message={error} kind={kind} parentId={parentId} attachment={attachment} />
       </div>
     );
   }
 
-  if (kind === "docx-pptx" && pdfBlobUrl) {
+  if (viewKind === "docx-pptx" && pdfBlobUrl) {
     return (
       <iframe
         src={pdfBlobUrl}
@@ -291,7 +297,7 @@ function ViewerBody({
     );
   }
 
-  if (kind === "txt" && text) {
+  if (viewKind === "txt" && text) {
     return (
       <div className="h-full overflow-auto rounded-lg border border-gray-200 p-3 dark:border-gray-700">
         <pre className="whitespace-pre-wrap break-words font-mono text-xs text-gray-800 dark:text-gray-200">
@@ -306,7 +312,7 @@ function ViewerBody({
     );
   }
 
-  if (kind === "md" && text) {
+  if (viewKind === "md" && text) {
     return (
       <div className="h-full overflow-auto rounded-lg border border-gray-200 p-4 dark:border-gray-700">
         <MarkdownContent content={text.text} />
@@ -319,7 +325,7 @@ function ViewerBody({
     );
   }
 
-  if (kind === "hwp" && text) {
+  if (viewKind === "hwp" && text) {
     return (
       <div className="flex h-full flex-col gap-2">
         <p className="shrink-0 text-xs text-gray-400 dark:text-gray-500">
@@ -334,7 +340,7 @@ function ViewerBody({
     );
   }
 
-  if (kind === "table" && table) {
+  if (viewKind === "table" && table) {
     return <TableView table={table} />;
   }
 
@@ -342,11 +348,13 @@ function ViewerBody({
 }
 
 export default function AttachmentViewerModal({
-  conversationId,
+  kind,
+  parentId,
   attachment,
   onClose,
 }: {
-  conversationId: string;
+  kind: AttachmentKind; // "chat"이면 채팅 첨부(/conversations/...), "project"면 참고자료(/projects/...)
+  parentId: string; // kind에 따라 conversationId 또는 projectId
   attachment: ViewerAttachment;
   onClose: () => void;
 }) {
@@ -376,7 +384,7 @@ export default function AttachmentViewerModal({
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <a
-              href={attachmentFileUrl(conversationId, attachment.id, true)}
+              href={attachmentFileUrl(kind, parentId, attachment.id, true)}
               aria-label="다운로드"
               className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
             >
@@ -394,7 +402,7 @@ export default function AttachmentViewerModal({
         </div>
 
         <div className="min-h-0 flex-1 p-4">
-          <ViewerBody conversationId={conversationId} attachment={attachment} />
+          <ViewerBody kind={kind} parentId={parentId} attachment={attachment} />
         </div>
       </div>
     </div>

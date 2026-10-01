@@ -38,12 +38,14 @@ Model IDs and routing maps live in [backend/app/models_config.py](backend/app/mo
 - **Web search tool use** — the routed model itself decides whether a question needs a web search (same pattern as ChatGPT/Claude), then answers with cited sources.
 - **File attachments** — drag-and-drop or attach files into a chat (txt, md, csv, xlsx, docx, pptx, hwp/hwpx, pdf, images). Text and embedded images are extracted per format and sent to the model alongside your message; extraction runs in the background so sending isn't blocked on slow conversions.
 - **Attachment preview** — click an attached file's chip (before or after sending) to open it in a modal viewer: text/markdown inline, CSV/XLSX as a table, images and PDFs rendered directly, and DOCX/PPTX converted to PDF on first view.
+- **Project folders** — group related chat rooms under a project that has its own instruction, reference files, and memory, scoped only to that project's chats. Each project gets its own page (`/projects/{id}`); chats can be dragged in and out of a project, and folders can be pinned, color-coded, and renamed from the sidebar.
+- **Memory settings** — a dedicated view lists every auto-extracted memory fact, both global and per-project, with a delete button on each so you can correct or remove anything the model shouldn't keep remembering.
 
 More features are planned (rate limiting, PPT/Excel export, etc.) — this list will grow with a short bullet per feature as they land.
 
 ## Memory
 
-Four mechanisms decide what the model "remembers" and where that carries over to:
+Six mechanisms decide what the model "remembers" and where that carries over to:
 
 | Feature | Scope | Trigger | Description | Core mechanism |
 | --- | --- | --- | --- | --- |
@@ -51,8 +53,10 @@ Four mechanisms decide what the model "remembers" and where that carries over to
 | Auto memory extraction | Across chat rooms | Automatic | Remembers key facts (preferences, job, etc.) even when you switch or open a new chat room | Memory formation |
 | Personal instructions | Across chat rooms | Manual | Write a self-intro and preferred reply style once; applied to every chat room | System prompt injection |
 | Import from other AI | Across chat rooms | Manual | Extracts context from another AI platform via a dedicated prompt and carries it into replies here | Memory import |
+| Project memory | Chats inside one project | Automatic | Same auto-extraction as above, but scoped to that project's chats only and kept separate from global memory | Memory formation |
+| Project instructions | Chats inside one project | Manual | Set an instruction on a project folder; applied only to chat rooms assigned to that project, on top of the global instruction | System prompt injection |
 
-When two or more of these disagree on the same fact, personal instructions win, then imported memory, then auto-extracted memory (see [conversations.py](backend/app/conversations.py)).
+When two or more of these disagree on the same fact, they're applied in order: personal instructions → imported memory → auto-extracted (global) memory → project instructions → project memory (see [conversations.py](backend/app/conversations.py)). Both the global memory and every project's memory can be reviewed and individual facts deleted from the memory settings view.
 
 ## Attachments
 

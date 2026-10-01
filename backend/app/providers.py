@@ -181,11 +181,26 @@ def _raise_for_status_logged(resp: httpx.Response) -> None:
     resp.raise_for_status()
 
 
-def _apply_anthropic_cache_control(anthropic_messages: list[dict]) -> None:
+def _apply_anthropic_cache_control(
+    anthropic_messages: list[dict], reference_block_count: int | None = None
+) -> None:
     """대화 이력 중 "이번 턴"을 제외한 마지막 안정 지점(이전 턴)의 마지막
     content block에 프롬프트 캐싱을 건다. 그 지점까지의 모든 이전 턴(특히
     이미지가 포함된 과거 턴)이 캐시 대상이 되어, 다음 턴부터는 재계산 없이
-    캐시를 재사용한다. 새 질문(마지막 메시지)은 매번 바뀌므로 캐시 대상에서 뺀다."""
+    캐시를 재사용한다. 새 질문(마지막 메시지)은 매번 바뀌므로 캐시 대상에서 뺀다.
+
+    reference_block_count가 있으면(프로젝트 참고자료가 첫 번째 메시지 맨
+    앞에 끼워진 경우) 그 블록들이 끝나는 지점에도 별도 브레이크포인트를
+    하나 더 찍는다 - 참고자료 자체가 바뀌지 않는 한 대화 턴 수와 무관하게
+    항상 캐시 재사용 대상이 되도록. 두 브레이크포인트는 서로 다른 메시지/
+    블록을 가리키므로 충돌 없이 공존한다(Anthropic은 최대 4개까지 지원,
+    지금은 2개만 사용)."""
+    if reference_block_count and anthropic_messages:
+        first_content = anthropic_messages[0]["content"]
+        if isinstance(first_content, list) and len(first_content) >= reference_block_count:
+            idx = reference_block_count - 1
+            first_content[idx] = {**first_content[idx], "cache_control": {"type": "ephemeral"}}
+
     if len(anthropic_messages) < 2:
         return
     target = anthropic_messages[-2]
@@ -198,7 +213,9 @@ def _apply_anthropic_cache_control(anthropic_messages: list[dict]) -> None:
         content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
 
 
-def _prepare_anthropic_messages(messages: list[dict]) -> tuple[list[str], list[dict]]:
+def _prepare_anthropic_messages(
+    messages: list[dict], reference_block_count: int | None = None
+) -> tuple[list[str], list[dict]]:
     """system 텍스트 분리 + content 변환 + 캐싱까지 한 번에 처리."""
     system_texts = [m["content"] for m in messages if m["role"] == "system"]
     chat_messages = [
@@ -206,7 +223,7 @@ def _prepare_anthropic_messages(messages: list[dict]) -> tuple[list[str], list[d
         for m in messages
         if m["role"] != "system"
     ]
-    _apply_anthropic_cache_control(chat_messages)
+    _apply_anthropic_cache_control(chat_messages, reference_block_count)
     return system_texts, chat_messages
 
 
@@ -277,12 +294,18 @@ async def call_model(spec: ModelSpec, message: str) -> str:
 
 
 async def call_model_with_tools(
-    spec: ModelSpec, messages: list[dict[str, str]]
+    spec: ModelSpec,
+    messages: list[dict[str, str]],
+    reference_block_count: int | None = None,
 ) -> ToolCallResult:
     """웹 검색 tool을 실어서 1차(비스트리밍) 호출 - 라우팅된 spec 모델 자신이
     검색이 필요한지 판단한다(ChatGPT/Claude가 실제로 쓰는 방식과 동일, 판단
     전용 별도 모델은 안 씀). stream_model()과 달리 tools를 받고 비스트리밍이라
     별도 함수로 뒀다.
+
+    reference_block_count: 프로젝트 참고자료가 붙은 대화면, 첫 번째 메시지
+    맨 앞 몇 개 블록이 참고자료인지(Anthropic 캐싱 2번째 브레이크포인트용).
+    프로젝트 없는 일반 대화는 None - 기존 동작 그대로.
     """
     api_key = API_KEYS.get(spec.company, "")
     if not api_key:
@@ -293,7 +316,9 @@ async def call_model_with_tools(
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         if spec.company == "anthropic":
             # stream_model()과 동일하게 system role은 최상위 파라미터로 분리.
-            system_texts, chat_messages = _prepare_anthropic_messages(messages)
+            system_texts, chat_messages = _prepare_anthropic_messages(
+                messages, reference_block_count
+            )
 
             payload: dict = {
                 "model": spec.model_id,
@@ -463,6 +488,7 @@ async def stream_model(
     spec: ModelSpec,
     messages: list[dict[str, str]],
     usage: dict[str, int] | None = None,
+    reference_block_count: int | None = None,
 ) -> AsyncIterator[str]:
     """대화 이력(messages)을 포함해 호출하고, 텍스트 조각을 스트리밍으로 yield한다.
 
@@ -474,6 +500,9 @@ async def stream_model(
     ({"input_tokens": N, "output_tokens": N})을 이 dict에 채워 넣는다
     (스트리밍 도중 채워지므로 제너레이터가 끝난 뒤 호출자가 읽으면 됨).
     응답에 값이 없으면 채우지 않으니, 호출자가 폴백을 준비해야 한다.
+
+    reference_block_count: call_model_with_tools와 동일 - 프로젝트 참고자료
+    블록 개수(Anthropic 캐싱 2번째 브레이크포인트용), 없으면 기존 동작 그대로.
     """
     api_key = API_KEYS.get(spec.company, "")
     if not api_key:
@@ -486,7 +515,9 @@ async def stream_model(
             # Anthropic Messages API는 messages 배열 안에 role="system"을 허용하지
             # 않고, 최상위 system 파라미터로 따로 받는다. 다른 두 회사는 system
             # role을 messages에 그대로 둬도 되는 OpenAI 호환 방식이라 그쪽은 안 건드림.
-            system_texts, chat_messages = _prepare_anthropic_messages(messages)
+            system_texts, chat_messages = _prepare_anthropic_messages(
+                messages, reference_block_count
+            )
 
             payload: dict = {
                 "model": spec.model_id,

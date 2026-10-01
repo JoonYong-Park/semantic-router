@@ -26,12 +26,22 @@ from app.db_models import (
     Attachment,
     Conversation,
     Message,
+    Project,
+    ProjectFile,
+    ProjectMemory,
     UserMemory,
     UserSettings,
 )
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
 from app.router import select_model
-from app.schemas import AttachmentOut, ConversationOut, MessageCreate, MessageOut
+from app.schemas import (
+    AttachmentOut,
+    ConversationOut,
+    ConversationProjectUpdate,
+    ConversationUpdate,
+    MessageCreate,
+    MessageOut,
+)
 from app.token_counter import count_tokens, estimate_content_tokens
 
 logger = logging.getLogger("uvicorn.error")
@@ -88,9 +98,50 @@ async def list_conversations(
     result = await session.execute(
         select(Conversation)
         .where(Conversation.user_id == DEMO_USER_ID)
-        .order_by(Conversation.updated_at.desc())
+        .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
     )
     return list(result.scalars().all())
+
+
+@router.patch("/{conversation_id}", response_model=ConversationOut)
+async def update_conversation(
+    conversation_id: UUID,
+    body: ConversationUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> Conversation:
+    """제목 변경(이름 변경) / 고정 토글 - 사이드바 채팅 항목의 "⋮" 메뉴에서 사용.
+    프로젝트 편입은 별도 엔드포인트(/{conversation_id}/project)로 분리돼 있음."""
+    conv = await session.get(Conversation, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    updates = body.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(conv, key, value)
+    await session.commit()
+    await session.refresh(conv)
+    return conv
+
+
+@router.patch("/{conversation_id}/project", response_model=ConversationOut)
+async def update_conversation_project(
+    conversation_id: UUID,
+    body: ConversationProjectUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> Conversation:
+    """채팅을 프로젝트로 편입(project_id 설정)하거나 해제(null)한다. 이
+    시점 이후의 새 메시지부터만 프로젝트 지침/참고자료/메모리가 적용된다 -
+    이미 저장된 과거 메시지 내용 자체는 안 바뀌므로 자연히 그렇게 동작한다."""
+    conv = await session.get(Conversation, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    if body.project_id is not None:
+        project = await session.get(Project, body.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    conv.project_id = body.project_id
+    await session.commit()
+    await session.refresh(conv)
+    return conv
 
 
 @router.delete("/{conversation_id}", status_code=204)
@@ -175,6 +226,41 @@ def _content_with_attachments(text: str, atts: list[Attachment]) -> str | list[d
                     "text": "(이 첨부파일은 아직 처리되지 않았거나 처리에 실패해 내용이 포함되지 않았습니다.)",
                 }
             )
+    return blocks
+
+
+def _project_reference_blocks(project_files: list[ProjectFile]) -> list[dict]:
+    """프로젝트 참고자료를 "요약 목록 → 파일별 본문(텍스트+이미지, 문서 내
+    순서 유지)" 순서로 조립한다. 호출 전에 extraction_status == "done"인
+    파일만 골라서 넘겨야 한다(대기/실패 파일은 여기서 다루지 않음).
+
+    ProjectFile은 attachments.blocks_for_model()이 기대하는 필드
+    (extracted_text/stored_path/mime_type)를 Attachment와 동일하게 갖고
+    있어서, 별도 어댑터 없이 그대로 재사용한다."""
+    if not project_files:
+        return []
+
+    SUMMARY_CHARS = 100
+    summary_lines = []
+    for pf in project_files:
+        preview = ""
+        if pf.extracted_text:
+            try:
+                stored_blocks = json.loads(pf.extracted_text)
+                text_parts = [b["text"] for b in stored_blocks if b.get("type") == "text"]
+                preview = " ".join(text_parts).strip()[:SUMMARY_CHARS]
+            except json.JSONDecodeError:
+                preview = ""
+        summary_lines.append(
+            f"- {pf.original_name}: {preview}" if preview else f"- {pf.original_name}"
+        )
+
+    blocks: list[dict] = [
+        {"type": "text", "text": "[프로젝트 참고자료 목록]\n" + "\n".join(summary_lines)}
+    ]
+    for pf in project_files:
+        blocks.append({"type": "text", "text": f"[참고자료: {pf.original_name}]"})
+        blocks.extend(attachments_module.blocks_for_model(pf))
     return blocks
 
 
@@ -297,6 +383,23 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
         )
         memory_facts = [m.content for m in memory_result.scalars().all()]
 
+        # 이 채팅이 프로젝트에 편입돼 있으면 프로젝트 지침 + 프로젝트 전용
+        # 메모리를 추가로 조회한다(전역 정보를 대체하는 게 아니라 누적).
+        # conv는 위에서 이미 로드해뒀으므로 project_id 확인에 추가 쿼리가
+        # 필요 없다.
+        project_id = conv.project_id
+        project_instruction: str | None = None
+        project_memory_facts: list[str] = []
+        if project_id is not None:
+            project = await check_session.get(Project, project_id)
+            project_instruction = project.instruction if project else None
+            project_memory_result = await check_session.execute(
+                select(ProjectMemory).where(ProjectMemory.project_id == project_id)
+            )
+            project_memory_facts = [
+                m.fact for m in project_memory_result.scalars().all()
+            ]
+
     async def event_stream():
         # StreamingResponse의 제너레이터는 응답이 실제로 스트리밍되는 동안 실행되므로,
         # FastAPI Depends로 주입된 세션(요청 처리 직후 정리됨)을 쓰면 그 사이 세션이
@@ -354,6 +457,35 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 session, conversation_id, body.content, new_attachments
             )
 
+            # 프로젝트 참고자료 삽입 - _build_history() 내부는 안 건드리고,
+            # 반환된 history의 "첫 번째 메시지" content 맨 앞에 끼워넣는다
+            # (system 메시지를 나중에 prepend하는 것과 동일한 후처리 패턴).
+            # extraction_status == "done"인 파일만 대상 - pending/failed는
+            # 원본 mime_type이 그대로 노출돼 provider가 이해 못 할 수 있어 제외.
+            reference_block_count: int | None = None
+            if project_id is not None:
+                project_files_result = await session.execute(
+                    select(ProjectFile)
+                    .where(
+                        ProjectFile.project_id == project_id,
+                        ProjectFile.extraction_status == "done",
+                    )
+                    .order_by(ProjectFile.created_at)
+                )
+                reference_blocks = _project_reference_blocks(
+                    list(project_files_result.scalars().all())
+                )
+                if reference_blocks:
+                    first_content = history[0]["content"]
+                    if isinstance(first_content, str):
+                        first_content = (
+                            [{"type": "text", "text": first_content}]
+                            if first_content
+                            else []
+                        )
+                    history[0]["content"] = reference_blocks + first_content
+                    reference_block_count = len(reference_blocks)
+
             # 4) 사용자 메시지 저장 - id를 미리 만들어서 같은 트랜잭션에서
             #    첨부파일의 message_id를 바로 연결한다 (전송 완료 표시).
             user_message_id = uuid_module.uuid4()
@@ -396,11 +528,20 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             if memory_facts:
                 facts_block = "\n".join(f"- {fact}" for fact in memory_facts)
                 system_parts.append(f"[기억]\n{facts_block}")
+            # 프로젝트 지침/메모리는 전역 정보를 대체하지 않고 그 뒤에 누적된다 -
+            # 이 채팅이 프로젝트에 편입된 시점 이후 턴에만 자연히 적용됨
+            # (project_id는 그 시점에만 설정되므로 과거 메시지 자체엔 영향 없음).
+            if project_instruction and project_instruction.strip():
+                system_parts.append(f"[프로젝트 지침]\n{project_instruction.strip()}")
+            if project_memory_facts:
+                project_facts_block = "\n".join(f"- {fact}" for fact in project_memory_facts)
+                system_parts.append(f"[프로젝트 기억]\n{project_facts_block}")
 
             if len(system_parts) > 1:
                 priority_note = (
                     "아래는 사용자에 대한 참고 정보다. 서로 내용이 충돌하면 "
-                    "[개인 지침] → [가져온 정보] → [기억] 순으로 우선 적용해."
+                    "[개인 지침] → [가져온 정보] → [기억] → [프로젝트 지침] → "
+                    "[프로젝트 기억] 순으로 우선 적용해."
                 )
                 system_parts = [priority_note] + system_parts
 
@@ -421,7 +562,9 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             web_search_used = False
             web_search_query: str | None = None
             try:
-                tool_result = await providers.call_model_with_tools(spec, history)
+                tool_result = await providers.call_model_with_tools(
+                    spec, history, reference_block_count
+                )
 
                 if tool_result.wants_search and tool_result.search_query:
                     web_search_used = True
@@ -454,7 +597,9 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                             }
                         ]
 
-                    async for chunk in providers.stream_model(spec, history, usage):
+                    async for chunk in providers.stream_model(
+                        spec, history, usage, reference_block_count
+                    ):
                         full_response += chunk
                         yield _sse({"type": "chunk", "content": chunk})
 

@@ -4,13 +4,23 @@ conversations.py와 마찬가지로 로그인이 없는 데모라 DEMO_USER_ID �
 설정을 귀속시킨다. Semantic Router/스트리밍/컨텍스트 유지 로직은 건드리지 않는다.
 """
 
-from fastapi import APIRouter, Depends
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.db_models import DEMO_USER_ID, UserSettings
-from app.schemas import ImportedMemoryOut, ImportMemoryCreate, SettingsOut, SettingsUpdate
+from app.db_models import DEMO_USER_ID, Project, ProjectMemory, UserMemory, UserSettings
+from app.schemas import (
+    ImportedMemoryOut,
+    ImportMemoryCreate,
+    MemoryFactOut,
+    MemoryOverviewOut,
+    ProjectMemoryGroupOut,
+    SettingsOut,
+    SettingsUpdate,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -91,3 +101,71 @@ async def delete_imported_memory(
         settings.imported_memory = None
         await session.commit()
     return ImportedMemoryOut(imported_memory=None)
+
+
+# --- 자동 메모리 조회(전역 + 프로젝트별) ---
+
+
+@router.get("/memory", response_model=MemoryOverviewOut)
+async def get_memory_overview(
+    session: AsyncSession = Depends(get_session),
+) -> MemoryOverviewOut:
+    global_result = await session.execute(
+        select(UserMemory)
+        .where(UserMemory.user_id == DEMO_USER_ID)
+        .order_by(UserMemory.created_at)
+    )
+    global_memories = [
+        MemoryFactOut(id=m.id, fact=m.content, created_at=m.created_at)
+        for m in global_result.scalars().all()
+    ]
+
+    # 메모리가 하나도 없는 프로젝트도 목록에 나오게, 프로젝트 전체를 먼저
+    # 조회하고 각 프로젝트별로 메모리를 채워 넣는다(outer join 대신 이 방식을
+    # 쓴 이유: 다른 모델들과 마찬가지로 이 프로젝트는 ORM relationship을
+    # 안 쓰는 컨벤션이라 - conversations.py의 attachments 처리와 동일한 패턴).
+    projects_result = await session.execute(select(Project).order_by(Project.created_at))
+    projects = list(projects_result.scalars().all())
+
+    memory_result = await session.execute(
+        select(ProjectMemory).order_by(ProjectMemory.created_at)
+    )
+    memories_by_project: dict[UUID, list[MemoryFactOut]] = {}
+    for m in memory_result.scalars().all():
+        memories_by_project.setdefault(m.project_id, []).append(
+            MemoryFactOut(id=m.id, fact=m.fact, created_at=m.created_at)
+        )
+
+    project_groups = [
+        ProjectMemoryGroupOut(
+            project_id=p.id,
+            project_name=p.name,
+            memories=memories_by_project.get(p.id, []),
+        )
+        for p in projects
+    ]
+
+    return MemoryOverviewOut.model_validate(
+        {"global": global_memories, "projects": project_groups}
+    )
+
+
+@router.delete("/memory/{memory_id}", status_code=204, response_model=None)
+async def delete_memory_fact(
+    memory_id: UUID, session: AsyncSession = Depends(get_session)
+) -> None:
+    # 전역/프로젝트 메모리 중 어느 쪽 id인지 클라이언트가 구분해서 보낼 필요
+    # 없게, 양쪽 테이블을 순서대로 조회해서 있는 쪽에서 지운다.
+    global_fact = await session.get(UserMemory, memory_id)
+    if global_fact is not None:
+        await session.delete(global_fact)
+        await session.commit()
+        return
+
+    project_fact = await session.get(ProjectMemory, memory_id)
+    if project_fact is not None:
+        await session.delete(project_fact)
+        await session.commit()
+        return
+
+    raise HTTPException(status_code=404, detail="메모리를 찾을 수 없습니다.")

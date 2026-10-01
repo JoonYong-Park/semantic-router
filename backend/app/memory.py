@@ -27,7 +27,7 @@ from sqlalchemy import delete, select
 
 from app import providers
 from app.db import SessionLocal
-from app.db_models import DEMO_USER_ID, Conversation, Message, UserMemory
+from app.db_models import DEMO_USER_ID, Conversation, Message, ProjectMemory, UserMemory
 from app.models_config import ModelSpec
 
 logger = logging.getLogger("uvicorn.error")
@@ -73,10 +73,19 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
         if not new_messages:
             return
 
-        mem_result = await session.execute(
-            select(UserMemory).where(UserMemory.user_id == user_id)
-        )
-        existing_list = [m.content for m in mem_result.scalars().all()]
+        # conversation.project_id 유무로 저장 대상만 분기한다(대체가 아니라
+        # 이 대화방이 속한 쪽 하나에만 쓰는 것) - conv를 함수 맨 위에서 이미
+        # 통째로 로드해뒀으므로 project_id 확인에 추가 쿼리가 필요 없다.
+        if conv.project_id is not None:
+            existing_result = await session.execute(
+                select(ProjectMemory).where(ProjectMemory.project_id == conv.project_id)
+            )
+            existing_list = [m.fact for m in existing_result.scalars().all()]
+        else:
+            mem_result = await session.execute(
+                select(UserMemory).where(UserMemory.user_id == user_id)
+            )
+            existing_list = [m.content for m in mem_result.scalars().all()]
 
         messages_text = "\n".join(f"{m.role}: {m.content}" for m in new_messages)
         prompt = (
@@ -108,9 +117,16 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
             return
 
         # 기존 메모리 전체를 새로 뽑은 최종본으로 교체 (모델이 추가/유지/교체를 다 반영해서 줌)
-        await session.execute(delete(UserMemory).where(UserMemory.user_id == user_id))
-        for content in memories:
-            session.add(UserMemory(user_id=user_id, content=content))
+        if conv.project_id is not None:
+            await session.execute(
+                delete(ProjectMemory).where(ProjectMemory.project_id == conv.project_id)
+            )
+            for fact in memories:
+                session.add(ProjectMemory(project_id=conv.project_id, fact=fact))
+        else:
+            await session.execute(delete(UserMemory).where(UserMemory.user_id == user_id))
+            for content in memories:
+                session.add(UserMemory(user_id=user_id, content=content))
 
         conv.last_extracted_message_id = new_messages[-1].id
         await session.commit()

@@ -14,6 +14,7 @@ from app.db import init_db
 from app.memory import router as memory_router
 from app.memory import scheduled_extraction_loop
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
+from app.projects import router as projects_router
 from app.providers import call_model
 from app.router import select_model
 from app.schemas import ChatRequest, ChatResponse
@@ -71,6 +72,7 @@ app.include_router(settings_router)
 app.include_router(memory_router)
 app.include_router(usage_router)
 app.include_router(search_router)
+app.include_router(projects_router)
 
 
 def _auto_mode_ready() -> bool:

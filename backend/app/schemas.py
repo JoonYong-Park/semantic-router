@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 Mode = Literal["auto", "openai", "google", "anthropic"]
 Size = Literal["small", "medium", "large"]
@@ -30,6 +30,19 @@ class ConversationOut(BaseModel):
     id: UUID
     title: Optional[str] = None
     updated_at: datetime
+    project_id: Optional[UUID] = None
+    pinned: bool = False
+    sort_order: int = 0
+
+
+class ConversationProjectUpdate(BaseModel):
+    project_id: Optional[UUID] = None
+
+
+class ConversationUpdate(BaseModel):
+    title: Optional[str] = None
+    pinned: Optional[bool] = None
+    sort_order: Optional[int] = None
 
 
 # --- 첨부파일 ---
@@ -93,6 +106,9 @@ class ImportedMemoryOut(BaseModel):
 # --- 토큰 사용량 ---
 
 UsagePeriod = Literal["today", "week", "month", "year"]
+ProjectColor = Literal[
+    "default", "red", "orange", "yellow", "green", "blue", "purple", "pink"
+]
 
 
 class UsageQuotaOut(BaseModel):
@@ -142,3 +158,74 @@ class SearchResultOut(BaseModel):
     title: Optional[str] = None
     snippet: str
     matched_role: str
+
+
+# --- 프로젝트 폴더 ---
+
+
+class ProjectOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    instruction: Optional[str] = None
+    max_capacity_bytes: int
+    pinned: bool = False
+    sort_order: int = 0
+    color: ProjectColor = "default"
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectCreate(BaseModel):
+    name: str
+    instruction: Optional[str] = None
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    instruction: Optional[str] = None
+    pinned: Optional[bool] = None
+    sort_order: Optional[int] = None
+    color: Optional[ProjectColor] = None
+
+
+class ProjectFileOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    original_name: str
+    mime_type: str
+    size_bytes: int
+    extraction_status: str
+    created_at: datetime
+
+
+class ProjectFilesOut(BaseModel):
+    files: list[ProjectFileOut]
+    used_bytes: int
+    max_bytes: int
+    percent: float
+
+
+# --- 메모리 조회(전역 + 프로젝트별) ---
+
+
+class MemoryFactOut(BaseModel):
+    id: UUID
+    fact: str
+    created_at: datetime
+
+
+class ProjectMemoryGroupOut(BaseModel):
+    project_id: UUID
+    project_name: str
+    memories: list[MemoryFactOut]
+
+
+class MemoryOverviewOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    # "global"은 파이썬 예약어라 속성명은 global_로 두고, JSON 필드명만 "global"로 맞춘다.
+    global_: list[MemoryFactOut] = Field(alias="global")
+    projects: list[ProjectMemoryGroupOut]
