@@ -203,6 +203,20 @@ async def get_messages(
     ]
 
 
+def _memory_topic_to_text(memory: UserMemory | ProjectMemory) -> str:
+    """UserMemory/ProjectMemory 토픽(name/summary/details) 한 건을 시스템
+    프롬프트에 넣을 한 줄(+하위 불릿) 텍스트로 변환한다."""
+    try:
+        details = json.loads(memory.details) if memory.details else []
+    except (json.JSONDecodeError, TypeError):
+        details = []
+    text = f"{memory.name}: {memory.summary}"
+    if details:
+        detail_lines = "\n".join(f"  · {d}" for d in details)
+        text = f"{text}\n{detail_lines}"
+    return text
+
+
 def _content_with_attachments(text: str, atts: list[Attachment]) -> str | list[dict]:
     """텍스트 + 첨부파일들을 provider 중립적인 내부 content 표현으로 합친다.
     첨부가 없으면 지금까지와 동일하게 순수 문자열을 그대로 반환 (기존 텍스트
@@ -386,7 +400,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
         memory_result = await check_session.execute(
             select(UserMemory).where(UserMemory.user_id == DEMO_USER_ID)
         )
-        memory_facts = [m.content for m in memory_result.scalars().all()]
+        memory_facts = [_memory_topic_to_text(m) for m in memory_result.scalars().all()]
 
         # 이 채팅이 프로젝트에 편입돼 있으면 프로젝트 지침 + 프로젝트 전용
         # 메모리를 추가로 조회한다(전역 정보를 대체하는 게 아니라 누적).
@@ -402,7 +416,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 select(ProjectMemory).where(ProjectMemory.project_id == project_id)
             )
             project_memory_facts = [
-                m.fact for m in project_memory_result.scalars().all()
+                _memory_topic_to_text(m) for m in project_memory_result.scalars().all()
             ]
 
     async def event_stream():

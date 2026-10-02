@@ -89,9 +89,12 @@ class ProjectFile(Base):
 
 
 class ProjectMemory(Base):
-    """프로젝트 전용 자동 메모리 - UserMemory와 동일한 구조지만 project_id
-    기준으로 쌓인다. 자동 메모리 추출이 conversation.project_id 유무로
-    UserMemory/ProjectMemory 중 어디에 쓸지 분기한다(memory.py)."""
+    """프로젝트 전용 자동 메모리 - "사실 한 줄 = row 하나"였던 플랫 구조에서
+    "토픽 하나 = row 하나"(Claude.ai 스타일: 이름 + 한 줄 요약 + 불릿 상세
+    목록)로 개편됨. UserMemory와 달리 category가 없다 - 어느 프로젝트
+    소속인지(project_id) 자체가 이미 분류 기준이라 별도 카테고리가 필요
+    없음. 자동 메모리 추출이 conversation.project_id 유무로 UserMemory/
+    ProjectMemory 중 어디에 쓸지 분기한다(memory.py)."""
 
     __tablename__ = "project_memory"
 
@@ -103,9 +106,16 @@ class ProjectMemory(Base):
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
     )
-    fact: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    # 불릿 목록 - JSON 배열 문자열로 저장(Attachment.extracted_text 등 이미
+    # 이 프로젝트에서 쓰는 "구조화 데이터를 JSON 텍스트로" 컨벤션과 동일).
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
     __table_args__ = (Index("ix_project_memory_project_id", "project_id"),)
@@ -255,7 +265,11 @@ class Attachment(Base):
 
 
 class UserMemory(Base):
-    """자동 메모리 추출로 쌓인 사실 한 줄 = row 하나.
+    """자동 메모리 추출로 쌓인 전역 메모리. "사실 한 줄 = row 하나"였던 플랫
+    구조에서 Claude.ai 스타일 "카테고리 → 토픽(이름 + 한 줄 요약 + 불릿
+    상세)"로 개편됨. category는 "나"/"주제"/"영역"/"사람" 중 하나로
+    고정하며, 그 중 "나"는 정확히 토픽 1개(Profile)만 유지하도록
+    추출 로직(memory.py)에서 강제한다.
     개인 지침/가져온 메모리(UserSettings)와 달리 여러 줄이라 별도 테이블로 둔다.
     """
 
@@ -265,9 +279,20 @@ class UserMemory(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    # 불릿 목록 - JSON 배열 문자열로 저장(Attachment.extracted_text 등 이미
+    # 이 프로젝트에서 쓰는 "구조화 데이터를 JSON 텍스트로" 컨벤션과 동일).
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
-    __table_args__ = (Index("ix_user_memory_user_id", "user_id"),)
+    __table_args__ = (
+        Index("ix_user_memory_user_id", "user_id"),
+        Index("ix_user_memory_user_id_category", "user_id", "category"),
+    )

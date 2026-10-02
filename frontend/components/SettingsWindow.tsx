@@ -15,10 +15,18 @@ import {
   getUsageQuota,
   getUsageStats,
   importMemory,
+  updateMemoryTopic,
   updateSettings,
 } from "@/lib/api";
-import { formatMonthDay } from "@/lib/dateFormat";
-import { MemoryFact, MemoryOverview, UsagePeriod, UsageQuota, UsageStats } from "@/lib/types";
+import { formatHoverTime, formatMonthDay } from "@/lib/dateFormat";
+import {
+  MemoryCategory,
+  MemoryOverview,
+  MemoryTopic,
+  UsagePeriod,
+  UsageQuota,
+  UsageStats,
+} from "@/lib/types";
 import UsageChart from "./UsageChart";
 
 export type SettingsTab = "personal" | "import" | "usage" | "memory" | "appearance";
@@ -553,19 +561,212 @@ function UsagePanel() {
   );
 }
 
-function MemoryRow({ memory, onDelete }: { memory: MemoryFact; onDelete: (id: string) => void }) {
+const MEMORY_CATEGORY_LABELS: Record<MemoryCategory, string> = {
+  나: "나",
+  주제: "주제",
+  영역: "영역",
+  사람: "사람",
+};
+
+type MemorySelection = { scope: "global" | { projectId: string }; topic: MemoryTopic };
+
+function MemoryTopicRow({
+  topic,
+  onOpen,
+  onDelete,
+}: {
+  topic: MemoryTopic;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
   return (
-    <li className="group flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-800/60">
-      <span className="flex-1 text-sm text-gray-700 dark:text-gray-300">{memory.fact}</span>
+    <tr
+      onClick={onOpen}
+      className="group cursor-pointer border-t border-gray-100 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-gray-800/60"
+    >
+      <td className="px-2 py-1.5 text-sm text-gray-700 dark:text-gray-300">{topic.name}</td>
+      <td className="max-w-0 truncate px-2 py-1.5 text-sm text-gray-500 dark:text-gray-400">
+        {topic.summary}
+      </td>
+      <td className="whitespace-nowrap px-2 py-1.5 text-xs text-gray-400 dark:text-gray-500">
+        {formatHoverTime(topic.updated_at)}
+      </td>
+      <td className="px-2 py-1.5">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          aria-label="메모리 삭제"
+          className="shrink-0 text-gray-300 opacity-0 hover:text-red-600 group-hover:opacity-100 dark:text-gray-600 dark:hover:text-red-400"
+        >
+          <TrashIcon />
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function MemoryTopicTable({
+  topics,
+  onOpen,
+  onDelete,
+}: {
+  topics: MemoryTopic[];
+  onOpen: (topic: MemoryTopic) => void;
+  onDelete: (id: string) => void;
+}) {
+  if (topics.length === 0) {
+    return (
+      <p className="py-3 text-center text-sm text-gray-400 dark:text-gray-500">
+        아직 추출된 메모리가 없습니다
+      </p>
+    );
+  }
+  return (
+    <table className="w-full table-fixed border-collapse">
+      <tbody>
+        {topics.map((t) => (
+          <MemoryTopicRow key={t.id} topic={t} onOpen={() => onOpen(t)} onDelete={() => onDelete(t.id)} />
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function MemoryTopicDetail({
+  selection,
+  onBack,
+  onChanged,
+  onDelete,
+}: {
+  selection: MemorySelection;
+  onBack: () => void;
+  onChanged: (topic: MemoryTopic) => void;
+  onDelete: (id: string) => void;
+}) {
+  const { topic } = selection;
+  const [summary, setSummary] = useState(topic.summary);
+  const [details, setDetails] = useState<string[]>(topic.details);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setSummary(topic.summary);
+    setDetails(topic.details);
+  }, [topic]);
+
+  async function save(nextSummary: string, nextDetails: string[]) {
+    setSaving(true);
+    try {
+      const updated = await updateMemoryTopic(topic.id, { summary: nextSummary, details: nextDetails });
+      onChanged(updated);
+    } catch {
+      // 저장 실패해도 입력값은 그대로 둬서 다시 blur하면 재시도됨
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleSummaryBlur() {
+    if (summary === topic.summary) return;
+    save(summary, details);
+  }
+
+  function handleDetailBlur(nextDetails: string[]) {
+    if (JSON.stringify(nextDetails) === JSON.stringify(topic.details)) return;
+    save(summary, nextDetails);
+  }
+
+  function updateDetail(index: number, value: string) {
+    setDetails((prev) => prev.map((d, i) => (i === index ? value : d)));
+  }
+
+  function removeDetail(index: number) {
+    const next = details.filter((_, i) => i !== index);
+    setDetails(next);
+    handleDetailBlur(next);
+  }
+
+  function addDetail() {
+    setDetails((prev) => [...prev, ""]);
+  }
+
+  return (
+    <div>
       <button
         type="button"
-        onClick={() => onDelete(memory.id)}
-        aria-label="메모리 삭제"
-        className="mt-0.5 shrink-0 text-gray-300 opacity-0 hover:text-red-600 group-hover:opacity-100 dark:text-gray-600 dark:hover:text-red-400"
+        onClick={onBack}
+        className="mb-3 flex items-center gap-1 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100"
       >
-        <TrashIcon />
+        <ChevronIcon open={false} />
+        목록으로
       </button>
-    </li>
+
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{topic.name}</h3>
+        {saving && <span className="text-xs text-gray-400 dark:text-gray-500">저장 중...</span>}
+      </div>
+      <p className="mb-4 text-xs text-gray-400 dark:text-gray-500">
+        마지막 업데이트: {formatHoverTime(topic.updated_at)}
+      </p>
+
+      <div className="mb-4">
+        <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+          요약
+        </h4>
+        <textarea
+          value={summary}
+          onChange={(e) => setSummary(e.target.value)}
+          onBlur={handleSummaryBlur}
+          rows={2}
+          className="w-full resize-none rounded-lg border border-gray-200 bg-transparent px-2 py-1.5 text-sm text-gray-700 outline-none focus:border-gray-400 dark:border-gray-700 dark:text-gray-300 dark:focus:border-gray-500"
+        />
+      </div>
+
+      <div className="mb-4">
+        <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+          세부 정보
+        </h4>
+        <ul className="space-y-1.5">
+          {details.map((d, i) => (
+            <li key={i} className="group flex items-start gap-1.5">
+              <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-gray-300 dark:bg-gray-600" />
+              <textarea
+                value={d}
+                onChange={(e) => updateDetail(i, e.target.value)}
+                onBlur={() => handleDetailBlur(details)}
+                rows={1}
+                className="flex-1 resize-none rounded-lg border border-transparent bg-transparent px-1.5 py-1 text-sm text-gray-700 outline-none hover:border-gray-200 focus:border-gray-400 dark:text-gray-300 dark:hover:border-gray-700 dark:focus:border-gray-500"
+              />
+              <button
+                type="button"
+                onClick={() => removeDetail(i)}
+                aria-label="세부 정보 삭제"
+                className="mt-1 shrink-0 text-gray-300 opacity-0 hover:text-red-600 group-hover:opacity-100 dark:text-gray-600 dark:hover:text-red-400"
+              >
+                <TrashIcon />
+              </button>
+            </li>
+          ))}
+        </ul>
+        <button
+          type="button"
+          onClick={addDetail}
+          className="mt-2 text-xs text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200"
+        >
+          + 세부 정보 추가
+        </button>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onDelete(topic.id)}
+        className="text-sm text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300"
+      >
+        이 메모리 삭제
+      </button>
+    </div>
   );
 }
 
@@ -575,6 +776,7 @@ function MemoryPanel({ initialOpenProjectId }: { initialOpenProjectId?: string |
   const [openProjects, setOpenProjects] = useState<Set<string>>(
     initialOpenProjectId ? new Set([initialOpenProjectId]) : new Set()
   );
+  const [selection, setSelection] = useState<MemorySelection | null>(null);
 
   useEffect(() => {
     getMemoryOverview()
@@ -605,16 +807,45 @@ function MemoryPanel({ initialOpenProjectId }: { initialOpenProjectId?: string |
     setOverview((prev) => {
       if (!prev) return prev;
       return {
-        global: prev.global.filter((m) => m.id !== id),
+        global: prev.global.map((g) => ({ ...g, topics: g.topics.filter((t) => t.id !== id) })),
         projects: prev.projects.map((p) => ({
           ...p,
-          memories: p.memories.filter((m) => m.id !== id),
+          topics: p.topics.filter((t) => t.id !== id),
         })),
       };
     });
+    setSelection((prev) => (prev && prev.topic.id === id ? null : prev));
     deleteMemoryFact(id).catch(() => {
       // 조용히 무시
     });
+  }
+
+  function handleTopicChanged(updated: MemoryTopic) {
+    setOverview((prev) => {
+      if (!prev) return prev;
+      return {
+        global: prev.global.map((g) => ({
+          ...g,
+          topics: g.topics.map((t) => (t.id === updated.id ? updated : t)),
+        })),
+        projects: prev.projects.map((p) => ({
+          ...p,
+          topics: p.topics.map((t) => (t.id === updated.id ? updated : t)),
+        })),
+      };
+    });
+    setSelection((prev) => (prev ? { ...prev, topic: updated } : prev));
+  }
+
+  if (selection) {
+    return (
+      <MemoryTopicDetail
+        selection={selection}
+        onBack={() => setSelection(null)}
+        onChanged={handleTopicChanged}
+        onDelete={handleDelete}
+      />
+    );
   }
 
   return (
@@ -631,17 +862,20 @@ function MemoryPanel({ initialOpenProjectId }: { initialOpenProjectId?: string |
             <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
               전체 채팅에서 추출된 메모리
             </h4>
-            {overview.global.length === 0 ? (
-              <p className="py-3 text-center text-sm text-gray-400 dark:text-gray-500">
-                아직 추출된 메모리가 없습니다
-              </p>
-            ) : (
-              <ul className="space-y-0.5">
-                {overview.global.map((m) => (
-                  <MemoryRow key={m.id} memory={m} onDelete={handleDelete} />
-                ))}
-              </ul>
-            )}
+            <div className="flex flex-col gap-4">
+              {overview.global.map((group) => (
+                <div key={group.category}>
+                  <h5 className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">
+                    {MEMORY_CATEGORY_LABELS[group.category]}
+                  </h5>
+                  <MemoryTopicTable
+                    topics={group.topics}
+                    onOpen={(topic) => setSelection({ scope: "global", topic })}
+                    onDelete={handleDelete}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
 
           <div>
@@ -670,22 +904,16 @@ function MemoryPanel({ initialOpenProjectId }: { initialOpenProjectId?: string |
                         <ChevronIcon open={open} />
                         <span className="flex-1 truncate">{p.project_name}</span>
                         <span className="text-xs font-normal text-gray-400 dark:text-gray-500">
-                          {p.memories.length}개
+                          {p.topics.length}개
                         </span>
                       </button>
                       {open && (
                         <div className="border-t border-gray-100 px-3 py-2 dark:border-gray-800">
-                          {p.memories.length === 0 ? (
-                            <p className="py-2 text-center text-xs text-gray-400 dark:text-gray-500">
-                              아직 추출된 메모리가 없습니다
-                            </p>
-                          ) : (
-                            <ul className="space-y-0.5">
-                              {p.memories.map((m) => (
-                                <MemoryRow key={m.id} memory={m} onDelete={handleDelete} />
-                              ))}
-                            </ul>
-                          )}
+                          <MemoryTopicTable
+                            topics={p.topics}
+                            onOpen={(topic) => setSelection({ scope: { projectId: p.project_id }, topic })}
+                            onDelete={handleDelete}
+                          />
                         </div>
                       )}
                     </li>

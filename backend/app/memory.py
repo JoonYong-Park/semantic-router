@@ -76,33 +76,100 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
         # conversation.project_id 유무로 저장 대상만 분기한다(대체가 아니라
         # 이 대화방이 속한 쪽 하나에만 쓰는 것) - conv를 함수 맨 위에서 이미
         # 통째로 로드해뒀으므로 project_id 확인에 추가 쿼리가 필요 없다.
-        if conv.project_id is not None:
+        # existing_list는 매번 이 시점에 DB에서 새로 읽으므로, 사용자가 메모리
+        # 화면에서 직접 수정한 내용이 있어도 다음 추출 시 그 최신 상태를 그대로
+        # "기존 메모리"로 보고 반영한다 (수동 편집이 다음 추출에 덮어써지지 않음).
+        is_project = conv.project_id is not None
+        if is_project:
             existing_result = await session.execute(
                 select(ProjectMemory).where(ProjectMemory.project_id == conv.project_id)
             )
-            existing_list = [m.fact for m in existing_result.scalars().all()]
+            existing_rows = existing_result.scalars().all()
+            existing_topics = [
+                {
+                    "name": m.name,
+                    "summary": m.summary,
+                    "details": json.loads(m.details) if m.details else [],
+                }
+                for m in existing_rows
+            ]
         else:
             mem_result = await session.execute(
                 select(UserMemory).where(UserMemory.user_id == user_id)
             )
-            existing_list = [m.content for m in mem_result.scalars().all()]
+            existing_rows = mem_result.scalars().all()
+            existing_topics = [
+                {
+                    "category": m.category,
+                    "name": m.name,
+                    "summary": m.summary,
+                    "details": json.loads(m.details) if m.details else [],
+                }
+                for m in existing_rows
+            ]
 
+        existing_json = json.dumps({"topics": existing_topics}, ensure_ascii=False)
         messages_text = "\n".join(f"{m.role}: {m.content}" for m in new_messages)
+
+        if is_project:
+            category_rule = ""
+            format_example = (
+                '{"topics": [{"name": "토픽 이름", "summary": "한 줄 요약", '
+                '"details": ["세부 사실1", "세부 사실2"]}]}'
+            )
+        else:
+            category_rule = (
+                '- 각 토픽은 category 필드를 "나" | "주제" | "영역" | "사람" 중 '
+                "하나로 분류해:\n"
+                "  - \"나\": 사용자 본인에 대한 프로필 정보(직업, 소속, 거주/근무 "
+                "지역, 선호도 등 사용자 자신에게만 해당하는 사실). 이 카테고리는 "
+                "전체를 통틀어 토픽을 정확히 1개(Profile)만 유지해야 하고, 새로운 "
+                "'나' 관련 사실은 기존 '나' 토픽 하나에 계속 병합해 "
+                "(절대 2개 이상 만들지 마)\n"
+                "  - \"주제\": 사용자가 관심 갖거나 반복해서 묻는 주제/기술/분야\n"
+                "  - \"영역\": 사용자가 진행 중인 프로젝트/업무 영역(프로젝트 "
+                "자체 메모리와는 별개로, 전역 대화에서 드러나는 업무 맥락)\n"
+                "  - \"사람\": 대화에 등장하는 특정 인물(상사, 동료, 팀원 등 "
+                "사용자 본인이 아닌 다른 사람) 개개인에 대한 정보. 인물마다 "
+                "별도 토픽을 만들고 topic name은 그 사람의 이름/직책으로 해 "
+                "(예: \"본부장님\", \"최근표 사원\")\n"
+                "- 중요: 한 문장/메시지 안에 여러 종류의 정보가 섞여 있으면 "
+                "카테고리별로 쪼개서 각자 알맞은 토픽에 나눠 담아. 예를 들어 "
+                "\"나는 A회사 B팀에서 C, D와 함께 일해\"라는 문장이면, "
+                "A회사/B팀 소속 정보는 '나' 토픽에, C와 D는 각각 '사람' 토픽으로 "
+                "분리해서 저장해 - 사용자 자신에 대한 정보가 아닌 타인에 대한 "
+                "정보를 '나' 토픽에 섞어 넣으면 안 됨. 특정 인물의 이름/직책은 "
+                "그 사람의 '사람' 토픽에만 적고, '나' 토픽에는 중복해서 적지 마 "
+                "(예: '나' 토픽엔 \"동료들과 함께 일한다\"처럼만 남기고, "
+                "이름/직책은 각 '사람' 토픽에서만 다뤄)\n"
+            )
+            format_example = (
+                '{"topics": [{"category": "나", "name": "토픽 이름", '
+                '"summary": "한 줄 요약", "details": ["세부 사실1", "세부 사실2"]}]}'
+            )
+
         prompt = (
-            f"[기존 메모리]\n{existing_list if existing_list else '없음'}\n\n"
+            f"[기존 메모리]\n{existing_json}\n\n"
             f"[새 대화]\n{messages_text}\n\n"
-            "아래 규칙으로 메모리를 업데이트해줘.\n"
-            "- 새로운 사실 (직업, 소속, 선호도, 담당 업무 등) → 추가\n"
-            "- 기존과 중복 → 유지\n"
-            "- 기존과 모순 → 최신으로 교체\n"
+            "메모리는 '토픽' 단위로 관리돼. 각 토픽은 이름(name), 한 줄 요약"
+            "(summary), 세부 사실 불릿 목록(details)으로 구성돼.\n"
+            "아래 규칙으로 [기존 메모리]를 갱신한 최종 전체 토픽 목록을 만들어줘.\n"
+            "- [새 대화]에서 새로운 사실(직업, 소속, 선호도, 담당 업무, 관심사 등)을 "
+            "찾으면, 관련 있는 기존 토픽이 있으면 그 토픽의 summary/details에 "
+            "병합하고, 없으면 새 토픽을 만들어\n"
+            "- 기존 토픽과 내용이 중복되면 유지, 모순되면 최신 내용으로 교체하고 "
+            "summary를 그에 맞게 다시 작성해\n"
+            f"{category_rule}"
             '- 일반 지식 질문 ("~가 뭐야?" 형태) → 무시\n'
             "- 1인칭(나, 내, 저) 및 2인칭(너, 당신) 표현을 쓰지 말고 "
             "'사용자'라고 표현해 (이 메모리는 나중에 다른 대화의 system 메시지로 "
             "다시 들어가므로, 대화체를 그대로 옮기면 안 됨)\n"
-            "- 최종 메모리 전체를 JSON으로만 반환\n"
-            "- 아래 반환 형식의 \"사실1\", \"사실2\"는 형식만 보여주는 자리표시자다. "
+            "- [새 대화]에서 바뀌지 않은 기존 토픽은 그대로 결과에 포함시켜 "
+            "(응답은 '기존 전체 + 새 변경사항'을 합친 최종본이어야 함)\n"
+            "- 최종 토픽 목록 전체를 JSON으로만 반환\n"
+            "- 아래 반환 형식의 값들은 형식만 보여주는 자리표시자다. [기존 메모리]나 "
             "[새 대화]에 실제로 나오지 않은 내용이면 절대 포함하지 마라\n\n"
-            '반환 형식: {"memories": ["사실1", "사실2"]}'
+            f"반환 형식: {format_example}"
         )
 
         try:
@@ -111,22 +178,55 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
             if not match:
                 return
             data = json.loads(match.group())
-            memories = data.get("memories", [])
+            topics = data.get("topics", [])
         except Exception as exc:  # noqa: BLE001
             logger.error("메모리 추출 실패 (conv_id=%s): %s", conv_id, exc)
             return
 
         # 기존 메모리 전체를 새로 뽑은 최종본으로 교체 (모델이 추가/유지/교체를 다 반영해서 줌)
-        if conv.project_id is not None:
+        if is_project:
             await session.execute(
                 delete(ProjectMemory).where(ProjectMemory.project_id == conv.project_id)
             )
-            for fact in memories:
-                session.add(ProjectMemory(project_id=conv.project_id, fact=fact))
+            for topic in topics:
+                name = topic.get("name")
+                summary = topic.get("summary")
+                if not name or not summary:
+                    continue
+                session.add(
+                    ProjectMemory(
+                        project_id=conv.project_id,
+                        name=name,
+                        summary=summary,
+                        details=json.dumps(topic.get("details", []), ensure_ascii=False),
+                    )
+                )
         else:
             await session.execute(delete(UserMemory).where(UserMemory.user_id == user_id))
-            for content in memories:
-                session.add(UserMemory(user_id=user_id, content=content))
+            seen_me = False
+            for topic in topics:
+                name = topic.get("name")
+                summary = topic.get("summary")
+                category = topic.get("category")
+                if not name or not summary or category not in (
+                    "나", "주제", "영역", "사람",
+                ):
+                    continue
+                if category == "나":
+                    # 모델이 지시를 어기고 "나" 토픽을 여러 개 반환하는 경우에
+                    # 대비한 방어적 가드 - 첫 번째만 쓰고 나머지는 버린다.
+                    if seen_me:
+                        continue
+                    seen_me = True
+                session.add(
+                    UserMemory(
+                        user_id=user_id,
+                        category=category,
+                        name=name,
+                        summary=summary,
+                        details=json.dumps(topic.get("details", []), ensure_ascii=False),
+                    )
+                )
 
         conv.last_extracted_message_id = new_messages[-1].id
         await session.commit()

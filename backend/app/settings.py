@@ -4,6 +4,7 @@ conversations.py와 마찬가지로 로그인이 없는 데모라 DEMO_USER_ID �
 설정을 귀속시킨다. Semantic Router/스트리밍/컨텍스트 유지 로직은 건드리지 않는다.
 """
 
+import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,8 +16,10 @@ from app.db_models import DEMO_USER_ID, Project, ProjectMemory, UserMemory, User
 from app.schemas import (
     ImportedMemoryOut,
     ImportMemoryCreate,
-    MemoryFactOut,
+    MemoryCategoryGroupOut,
     MemoryOverviewOut,
+    MemoryTopicOut,
+    MemoryTopicUpdate,
     ProjectMemoryGroupOut,
     SettingsOut,
     SettingsUpdate,
@@ -103,7 +106,21 @@ async def delete_imported_memory(
     return ImportedMemoryOut(imported_memory=None)
 
 
-# --- 자동 메모리 조회(전역 + 프로젝트별) ---
+# --- 자동 메모리 조회(전역: 카테고리별 토픽 + 프로젝트별 토픽) ---
+
+# UI에 항상 이 순서/전부를 보여주기 위한 고정 카테고리 목록(해당 카테고리에
+# 토픽이 하나도 없어도 빈 그룹으로 나오게).
+_MEMORY_CATEGORIES = ["나", "주제", "영역", "사람"]
+
+
+def _to_topic_out(m: UserMemory | ProjectMemory) -> MemoryTopicOut:
+    return MemoryTopicOut(
+        id=m.id,
+        name=m.name,
+        summary=m.summary,
+        details=json.loads(m.details) if m.details else [],
+        updated_at=m.updated_at,
+    )
 
 
 @router.get("/memory", response_model=MemoryOverviewOut)
@@ -113,11 +130,15 @@ async def get_memory_overview(
     global_result = await session.execute(
         select(UserMemory)
         .where(UserMemory.user_id == DEMO_USER_ID)
-        .order_by(UserMemory.created_at)
+        .order_by(UserMemory.updated_at.desc())
     )
-    global_memories = [
-        MemoryFactOut(id=m.id, fact=m.content, created_at=m.created_at)
-        for m in global_result.scalars().all()
+    topics_by_category: dict[str, list[MemoryTopicOut]] = {}
+    for m in global_result.scalars().all():
+        topics_by_category.setdefault(m.category, []).append(_to_topic_out(m))
+
+    global_groups = [
+        MemoryCategoryGroupOut(category=category, topics=topics_by_category.get(category, []))
+        for category in _MEMORY_CATEGORIES
     ]
 
     # 메모리가 하나도 없는 프로젝트도 목록에 나오게, 프로젝트 전체를 먼저
@@ -128,26 +149,45 @@ async def get_memory_overview(
     projects = list(projects_result.scalars().all())
 
     memory_result = await session.execute(
-        select(ProjectMemory).order_by(ProjectMemory.created_at)
+        select(ProjectMemory).order_by(ProjectMemory.updated_at.desc())
     )
-    memories_by_project: dict[UUID, list[MemoryFactOut]] = {}
+    topics_by_project: dict[UUID, list[MemoryTopicOut]] = {}
     for m in memory_result.scalars().all():
-        memories_by_project.setdefault(m.project_id, []).append(
-            MemoryFactOut(id=m.id, fact=m.fact, created_at=m.created_at)
-        )
+        topics_by_project.setdefault(m.project_id, []).append(_to_topic_out(m))
 
     project_groups = [
         ProjectMemoryGroupOut(
             project_id=p.id,
             project_name=p.name,
-            memories=memories_by_project.get(p.id, []),
+            topics=topics_by_project.get(p.id, []),
         )
         for p in projects
     ]
 
     return MemoryOverviewOut.model_validate(
-        {"global": global_memories, "projects": project_groups}
+        {"global": global_groups, "projects": project_groups}
     )
+
+
+@router.patch("/memory/{memory_id}", response_model=MemoryTopicOut)
+async def update_memory_topic(
+    memory_id: UUID,
+    payload: MemoryTopicUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> MemoryTopicOut:
+    # delete_memory_fact와 동일하게, 전역/프로젝트 중 어느 쪽 id인지 클라이언트가
+    # 구분해서 보낼 필요 없게 양쪽을 순서대로 조회한다.
+    topic: UserMemory | ProjectMemory | None = await session.get(UserMemory, memory_id)
+    if topic is None:
+        topic = await session.get(ProjectMemory, memory_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="메모리를 찾을 수 없습니다.")
+
+    topic.summary = payload.summary
+    topic.details = json.dumps(payload.details, ensure_ascii=False)
+    await session.commit()
+    await session.refresh(topic)
+    return _to_topic_out(topic)
 
 
 @router.delete("/memory/{memory_id}", status_code=204, response_model=None)
@@ -156,15 +196,15 @@ async def delete_memory_fact(
 ) -> None:
     # 전역/프로젝트 메모리 중 어느 쪽 id인지 클라이언트가 구분해서 보낼 필요
     # 없게, 양쪽 테이블을 순서대로 조회해서 있는 쪽에서 지운다.
-    global_fact = await session.get(UserMemory, memory_id)
-    if global_fact is not None:
-        await session.delete(global_fact)
+    global_topic = await session.get(UserMemory, memory_id)
+    if global_topic is not None:
+        await session.delete(global_topic)
         await session.commit()
         return
 
-    project_fact = await session.get(ProjectMemory, memory_id)
-    if project_fact is not None:
-        await session.delete(project_fact)
+    project_topic = await session.get(ProjectMemory, memory_id)
+    if project_topic is not None:
+        await session.delete(project_topic)
         await session.commit()
         return
 

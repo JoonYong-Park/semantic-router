@@ -208,24 +208,42 @@ class ProjectFilesOut(BaseModel):
     percent: float
 
 
-# --- 메모리 조회(전역 + 프로젝트별) ---
+# --- 메모리 조회(전역: 카테고리 → 토픽, 프로젝트: 토픽) ---
+
+MemoryCategory = Literal["나", "주제", "영역", "사람"]
 
 
-class MemoryFactOut(BaseModel):
+class MemoryTopicOut(BaseModel):
     id: UUID
-    fact: str
-    created_at: datetime
+    name: str
+    summary: str
+    details: list[str]
+    updated_at: datetime
+
+
+class MemoryCategoryGroupOut(BaseModel):
+    category: MemoryCategory
+    topics: list[MemoryTopicOut]
 
 
 class ProjectMemoryGroupOut(BaseModel):
     project_id: UUID
     project_name: str
-    memories: list[MemoryFactOut]
+    topics: list[MemoryTopicOut]
 
 
 class MemoryOverviewOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     # "global"은 파이썬 예약어라 속성명은 global_로 두고, JSON 필드명만 "global"로 맞춘다.
-    global_: list[MemoryFactOut] = Field(alias="global")
+    global_: list[MemoryCategoryGroupOut] = Field(alias="global")
     projects: list[ProjectMemoryGroupOut]
+
+
+class MemoryTopicUpdate(BaseModel):
+    """메모리 화면에서 토픽 상세를 직접 편집할 때 쓰는 요청 바디.
+    name/category는 자동 추출이 분류/명명을 책임지는 영역이라 편집 대상에서
+    제외하고, 사용자가 직접 다듬을 수 있는 summary/details만 받는다."""
+
+    summary: str
+    details: list[str]

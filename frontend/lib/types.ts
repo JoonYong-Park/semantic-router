@@ -179,23 +179,37 @@ export interface ProjectFilesOut {
   percent: number;
 }
 
-// --- 메모리 조회(전역 + 프로젝트별) ---
+// --- 메모리 조회(전역: 카테고리 → 토픽, 프로젝트: 토픽) ---
 
-export interface MemoryFact {
+export type MemoryCategory = "나" | "주제" | "영역" | "사람";
+
+export interface MemoryTopic {
   id: string;
-  fact: string;
-  created_at: string;
+  name: string;
+  summary: string;
+  details: string[];
+  updated_at: string;
+}
+
+export interface MemoryCategoryGroup {
+  category: MemoryCategory;
+  topics: MemoryTopic[];
 }
 
 export interface ProjectMemoryGroup {
   project_id: string;
   project_name: string;
-  memories: MemoryFact[];
+  topics: MemoryTopic[];
 }
 
 export interface MemoryOverview {
-  global: MemoryFact[];
+  global: MemoryCategoryGroup[];
   projects: ProjectMemoryGroup[];
+}
+
+export interface MemoryTopicUpdate {
+  summary: string;
+  details: string[];
 }
 
 export type StreamEvent =

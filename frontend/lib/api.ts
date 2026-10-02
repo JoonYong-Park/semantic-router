@@ -5,6 +5,8 @@ import {
   Conversation,
   DBMessage,
   MemoryOverview,
+  MemoryTopic,
+  MemoryTopicUpdate,
   Project,
   ProjectColor,
   ProjectFilesOut,
@@ -178,6 +180,19 @@ export async function deleteMemoryFact(memoryId: string): Promise<void> {
   if (!res.ok && res.status !== 404) {
     throw new Error(`메모리를 삭제하지 못했습니다 (HTTP ${res.status})`);
   }
+}
+
+export async function updateMemoryTopic(
+  memoryId: string,
+  payload: MemoryTopicUpdate
+): Promise<MemoryTopic> {
+  const res = await fetch(`${API_URL}/settings/memory/${memoryId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`메모리를 수정하지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
 }
 
 // --- 프로젝트 폴더 ---
