@@ -7,9 +7,13 @@ import하지 않도록(순환 import 방지) 스펙은 호출부가 인자로 �
 """
 
 import asyncio
+import io
 import json
 import logging
+import re
+import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, AsyncIterator, Awaitable, Callable
 from uuid import UUID
 
@@ -185,9 +189,10 @@ def _obj(properties: dict) -> dict:
     }
 
 
+
 CREATE_DOCUMENT_PARAMS = _obj({
-    "format": {"type": "string", "enum": ["docx", "pdf", "md", "txt"],
-               "description": "만들 파일 형식"},
+    "format": {"type": "string", "enum": ["docx", "pdf", "md", "txt", "hwpx"],
+               "description": "만들 파일 형식 (hwpx는 한글 문서)"},
     "filename": {"type": "string", "description": "확장자 없는 파일명(한글 가능). 비우면 title을 씀"},
     "title": {"type": "string", "description": "문서 맨 위 제목. 없으면 빈 문자열"},
     "blocks": {
@@ -249,7 +254,7 @@ CREATE_PRESENTATION_PARAMS = _obj({
 })
 
 CREATE_DOCUMENT_DESCRIPTION = (
-    "사용자가 워드(docx), PDF, 마크다운(md), 텍스트(txt) 파일로 받기를 원할 때 문서 파일을 만든다. "
+    "사용자가 워드(docx), PDF, 마크다운(md), 텍스트(txt), 한글(hwpx) 파일로 받기를 원할 때 문서 파일을 만든다. "
     "채팅 안에서 글이나 표를 보여주기만 하면 되는 요청에는 호출하지 말고 그냥 답변으로 작성한다. "
     "blocks는 위에서 아래 순서의 본문이며, 각 블록은 type에 맞는 필드만 채우고 나머지는 빈 값(\"\", [], 0)으로 둔다: "
     "heading은 level(1~3)과 text, paragraph는 text, bullets/numbered는 items, table은 rows(첫 행이 헤더). "
@@ -391,7 +396,311 @@ CREATE_PRESENTATION = ToolSpec(
     strict=True,
 )
 
-DOC_TOOL_NAMES = (CREATE_DOCUMENT.name, CREATE_SPREADSHEET.name, CREATE_PRESENTATION.name)
+# --- 이미지 생성 툴 ---
+
+MAX_IMAGES_PER_TURN = 2
+IMAGE_MODEL = "gpt-image-2.5-flare"
+IMAGE_SIZES = {"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"}
+IMAGE_QUALITIES = {"standard": "medium", "high": "high"}
+
+GENERATE_IMAGE_PARAMS = _obj({
+    "prompt": {
+        "type": "string",
+        "description": (
+            "만들 이미지 설명. 영어 또는 한국어 모두 가능. 이미지 안에 넣을 글자가 있으면 "
+            "따옴표로 정확히 명시. 실존 인물이나 상표/로고를 그리는 요청은 쓰지 말 것"
+        ),
+    },
+    "aspect_ratio": {"type": "string", "enum": ["square", "landscape", "portrait"],
+                     "description": "square=정사각형, landscape=가로형(슬라이드/배너), portrait=세로형(포스터)"},
+    "quality": {"type": "string", "enum": ["standard", "high"],
+                "description": "보통은 standard, 사용자가 고화질을 원할 때만 high"},
+    "format": {"type": "string", "enum": ["png", "jpg"], "description": "파일 형식, 특별한 요청이 없으면 png"},
+})
+
+GENERATE_IMAGE_DESCRIPTION = (
+    "사용자가 이미지, 그림, 일러스트, 썸네일, 배너, 포스터, 배경 이미지 등을 새로 만들어 달라고 할 때 이미지 1장을 생성한다. "
+    "차트·표·도표는 이 툴이 아니라 문서 툴이나 채팅 답변으로 처리하고, 코드나 SVG를 요청한 경우에도 호출하지 않는다. "
+    "한 번의 답변에서는 1장이 기본이며 사용자가 여러 장을 명시적으로 원할 때만 더 호출한다(최대 2장). "
+    "quality는 사용자가 고화질/고해상도를 명시하지 않으면 항상 standard로 한다(high는 비용이 큼). "
+    "만든 이미지는 사용자에게 카드로 바로 표시되므로 답변에 이미지 URL이나 마크다운 이미지 링크를 만들지 말고 "
+    "어떤 이미지를 만들었는지 한두 문장으로만 안내한다."
+)
+
+
+def _encode_image(png_bytes: bytes, fmt: str) -> bytes:
+    """API가 준 PNG를 Pillow로 열어 검증하고, jpg면 RGB로 변환해 저장한다."""
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(png_bytes))
+    img.load()
+    if fmt == "png":
+        return png_bytes
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+async def _execute_generate_image(arguments: dict, ctx: ToolContext) -> ToolResult:
+    from app import attachments
+    from app.schemas import AttachmentOut
+
+    prompt = arguments.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return ToolResult(content="prompt가 비어 있습니다. 만들 이미지를 구체적으로 설명해 다시 호출하세요.", is_error=True)
+    size = IMAGE_SIZES.get(arguments.get("aspect_ratio"))
+    quality = IMAGE_QUALITIES.get(arguments.get("quality"))
+    fmt = arguments.get("format")
+    if size is None or quality is None or fmt not in ("png", "jpg"):
+        return ToolResult(
+            content=(
+                "인자 검증 실패: aspect_ratio는 square/landscape/portrait, quality는 standard/high, "
+                f"format은 png/jpg 중 하나여야 합니다 (받은 값: {arguments.get('aspect_ratio')!r}, "
+                f"{arguments.get('quality')!r}, {fmt!r})."
+            ),
+            is_error=True,
+        )
+
+    count = ctx.turn_state.get("image_count", 0)
+    if count >= MAX_IMAGES_PER_TURN:
+        return ToolResult(
+            content=f"한 번의 답변에서 이미지는 최대 {MAX_IMAGES_PER_TURN}장까지 만들 수 있습니다. 더 만들지 말고 만든 이미지를 안내하세요.",
+            is_error=True,
+        )
+    model = IMAGE_MODEL
+    ctx.emit({"type": "processing", "message": "이미지 생성 중..."})
+    started = time.monotonic()
+    try:
+        png = await providers.generate_image(model, prompt, size, quality)
+    except providers.ImageRateLimitError:
+        return ToolResult(
+            content="이미지 생성 요청이 많아 잠시 제한되었습니다(429). 이미지를 만들지 못했다고 알리고 잠시 후 다시 시도해 달라고 안내하세요.",
+            is_error=True,
+        )
+    except providers.ImageContentPolicyError as exc:
+        return ToolResult(
+            content=f"이미지 생성이 콘텐츠 정책에 따라 거부되었습니다. 사유: {exc}. 이 사유를 사용자에게 그대로 알리고, 다른 표현으로 요청해 달라고 안내하세요.",
+            is_error=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("이미지 생성 실패 (model=%s, size=%s): %s", model, size, exc, exc_info=True)
+        return ToolResult(
+            content="이미지 생성 중 일시적인 오류가 발생했습니다. 이미지를 만들지 못했다고 알리고 잠시 후 다시 시도해 달라고 안내하세요.",
+            is_error=True,
+        )
+    elapsed = time.monotonic() - started
+    logger.info("이미지 생성 완료 (model=%s, size=%s, quality=%s, %.1fs)", model, size, quality, elapsed)
+
+    data = await asyncio.to_thread(_encode_image, png, fmt)
+    display_name = f"이미지_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}.{fmt}"
+    meta = {"kind": "image", "tool": "generate_image", "model": model, "size": size, "quality": quality, "format": fmt}
+    try:
+        attachment = await attachments.save_generated_file(ctx.conversation_id, display_name, fmt, data, meta)
+    except ValueError as exc:  # 25MB 상한
+        return ToolResult(content=str(exc), is_error=True)
+
+    ctx.turn_state["image_count"] = count + 1
+    ctx.emit({"type": "file", "attachment": AttachmentOut.model_validate(attachment).model_dump(mode="json")})
+    payload = {
+        "ok": True,
+        "file_id": str(attachment.id),
+        "filename": display_name,
+        "size": size,
+        "note": "이미지는 이미 사용자에게 카드로 표시됨. URL이나 이미지 링크를 만들지 말고 한두 문장으로만 안내할 것.",
+    }
+    return ToolResult(
+        content=json.dumps(payload, ensure_ascii=False),
+        metadata={"generated_attachment_id": attachment.id},
+    )
+
+
+GENERATE_IMAGE = ToolSpec(
+    name="generate_image",
+    description=GENERATE_IMAGE_DESCRIPTION,
+    parameters=GENERATE_IMAGE_PARAMS,
+    executor=_execute_generate_image,
+    strict=True,
+)
+
+
+# --- 기존 파일 부분 수정 툴 (트랙 3, 구현은 docedit.py) ---
+
+EDIT_OPS = ["replace_text", "set_cell_value"]
+
+INSPECT_DOCUMENT_PARAMS = _obj({
+    "attachment_id": {"type": "string", "description": "확인할 파일 id - 대화 기록의 \"(id=...)\" 값"},
+    "scope": {"type": "string", "description": "범위: all, sheet:시트이름(엑셀), slide:번호(PPT), section:제목 일부(워드)"},
+})
+
+EDIT_DOCUMENT_PARAMS = _obj({
+    "attachment_id": {"type": "string", "description": "수정할 파일 id (inspect_document에 쓴 것과 같은 id)"},
+    "doc_revision": {"type": "string", "description": "inspect_document 결과 맨 앞의 doc_revision 값"},
+    "operations": {
+        "type": "array",
+        "description": "수정 목록(최대 50개)",
+        "items": _obj({
+            "op": {"type": "string", "enum": EDIT_OPS,
+                   "description": "엑셀 셀은 set_cell_value, 워드/PPT 문단·표 셀·노트는 replace_text"},
+            "target_id": {"type": "string", "description": "inspect_document가 준 요소 ID (예: e12)"},
+            "expected_old_value": {"type": "string", "description": "그 요소의 현재 값(inspect 결과 그대로) - 다르면 거부됨"},
+            "new_value": {"type": "string", "description": "바꿀 새 값(요소 전체 텍스트). 날짜 셀은 YYYY-MM-DD"},
+        }),
+    },
+})
+
+INSPECT_DOCUMENT_DESCRIPTION = (
+    "사용자가 첨부했거나 앞에서 만든 엑셀(xlsx)/워드(docx)/파워포인트(pptx)/한글(hwpx) 파일의 일부를 고쳐 달라고 할 때, "
+    "먼저 이 툴로 현재 내용을 확인한다. 결과는 요소 ID(e1, e2…), 위치(시트/셀, 문단, 슬라이드/도형, 표 행·열), "
+    "현재 값, 서식, 수정 가능 여부 목록이며 맨 앞에 doc_revision이 있다. "
+    "attachment_id는 대화 기록의 \"[첨부 파일: 이름 (id=...)]\" 또는 \"[생성된 파일: 이름 (id=...)]\"에 있는 id를 쓰고, "
+    "결과가 길면 scope로 시트/슬라이드/섹션을 좁혀 다시 호출한다. 단순히 파일 내용을 설명해 달라는 요청에는 쓰지 않는다."
+)
+EDIT_DOCUMENT_DESCRIPTION = (
+    "inspect_document로 확인한 요소를 수정해 새 파일을 만든다(원본은 그대로 두고 '원본이름_수정' 파일로 저장). "
+    "반드시 직전 inspect_document 결과의 doc_revision, 요소 ID(target_id), 현재 값(expected_old_value)을 그대로 넣고, "
+    "new_value에는 그 요소의 바뀐 전체 텍스트를 넣는다(문단 일부만 바꿀 때도 문단 전체를 씀). "
+    "엑셀 셀은 set_cell_value, 워드/PPT는 replace_text만 쓸 수 있고 행/문단/슬라이드 추가·삭제는 할 수 없다. "
+    "하나라도 검증에 실패하면 아무것도 바뀌지 않고 이유가 돌아오니, 필요하면 inspect_document를 다시 호출해 고친다. "
+    "수정본은 doc_revision과 id가 새로 생기므로, 같은 파일을 이어서 또 고치려면 결과의 새 file_id로 inspect_document부터 다시 호출한다."
+)
+
+
+async def _resolve_file(ctx: ToolContext, attachment_id: str):
+    """이 채팅의 첨부(업로드/생성) 또는 이 채팅이 속한 프로젝트의 참고자료만 허용한다.
+    반환: (원본 바이트, 표시 이름, 확장자, Attachment id 또는 None, 출처 설명)."""
+    from pathlib import Path
+    from uuid import UUID as _UUID
+
+    from app import attachments, docedit
+    from app.db_models import Attachment, ProjectFile
+
+    try:
+        file_id = _UUID(str(attachment_id).strip())
+    except ValueError:
+        raise docedit.EditError(f"attachment_id {attachment_id!r}가 올바른 id 형식이 아닙니다. 대화 기록의 (id=...) 값을 그대로 쓰세요")
+    async with ctx.session_factory() as session:
+        row = await session.get(Attachment, file_id)
+        source = "attachment"
+        if row is None or row.chat_id != ctx.conversation_id:
+            row = await session.get(ProjectFile, file_id)
+            source = "project_file"
+            if row is None or ctx.project_id is None or row.project_id != ctx.project_id:
+                raise docedit.EditError(f"id {attachment_id}인 파일을 이 대화(또는 이 프로젝트 참고자료)에서 찾을 수 없습니다")
+    name = row.original_name
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext == "hwp":
+        raise docedit.EditError("hwp(구형 한글) 파일은 수정할 수 없습니다. 한글에서 hwpx로 저장(변환)한 뒤 다시 올려 주세요")
+    if ext not in docedit.supported_formats():
+        raise docedit.EditError(f"{name}은(는) 수정할 수 없는 형식입니다. 수정 가능 형식: {', '.join(docedit.supported_formats())}")
+    path = attachments._resolve_under_upload_root(Path(row.stored_path))
+    if path.suffix.lower().lstrip(".") != ext:
+        # 텍스트가 거의 없는 문서는 업로드 시 PDF로 변환돼 stored_path가 바뀌지만,
+        # 원본은 같은 폴더에 "{id}.{원래 확장자}"로 남아 있다(attachments._delete_stored_files 참고).
+        original = path.with_name(f"{row.id}.{ext}")
+        if not original.exists():
+            raise docedit.EditError(f"{name}의 원본 파일을 찾을 수 없어 수정할 수 없습니다(스캔본으로 PDF 변환됨)")
+        path = attachments._resolve_under_upload_root(original)
+    data = await asyncio.to_thread(path.read_bytes)
+    return data, name, ext, (row.id if source == "attachment" else None), source
+
+
+async def _execute_inspect_document(arguments: dict, ctx: ToolContext) -> ToolResult:
+    from app import docedit
+
+    try:
+        data, name, ext, _, _ = await _resolve_file(ctx, arguments.get("attachment_id", ""))
+        insp = await asyncio.to_thread(docedit.inspect_bytes, data, ext)
+        text = docedit.render_inspection(insp, arguments.get("scope", "all"), name)
+    except docedit.EditError as exc:
+        return ToolResult(content=f"inspect 실패: {exc}", is_error=True)
+    return ToolResult(content=text)
+
+
+async def _unique_edit_name(ctx: ToolContext, original_name: str) -> str:
+    from sqlalchemy import select
+
+    from app.db_models import Attachment
+
+    base, _, ext = original_name.rpartition(".")
+    base = base or original_name
+    # 수정본을 또 수정하면 "_수정_수정"이 되지 않게 기존 접미사는 뗀다
+    base = re.sub(r"_수정\d*$", "", base)
+    async with ctx.session_factory() as session:
+        result = await session.execute(
+            select(Attachment.original_name).where(Attachment.chat_id == ctx.conversation_id)
+        )
+        existing = set(result.scalars().all())
+    candidate, n = f"{base}_수정.{ext}", 2
+    while candidate in existing:
+        candidate = f"{base}_수정{n}.{ext}"
+        n += 1
+    return candidate
+
+
+async def _execute_edit_document(arguments: dict, ctx: ToolContext) -> ToolResult:
+    from app import attachments, docedit
+    from app.schemas import AttachmentOut
+
+    generated = ctx.turn_state.setdefault("generated_attachment_ids", [])
+    if len(generated) >= MAX_GENERATED_FILES_PER_TURN:
+        return ToolResult(content=f"한 번의 답변에서 파일은 최대 {MAX_GENERATED_FILES_PER_TURN}개까지 만들 수 있습니다.", is_error=True)
+    try:
+        data, name, ext, source_id, source = await _resolve_file(ctx, arguments.get("attachment_id", ""))
+        ctx.emit({"type": "processing", "message": "파일 수정 중..."})
+        new_bytes, summary, warnings, changed = await asyncio.to_thread(
+            docedit.apply_edits, data, ext, arguments.get("doc_revision", ""), arguments.get("operations") or []
+        )
+    except docedit.EditError as exc:
+        return ToolResult(content=f"edit 실패: {exc}", is_error=True)
+
+    display_name = await _unique_edit_name(ctx, name)
+    meta = {
+        "kind": "edit",
+        "tool": "edit_document",
+        "format": ext,
+        "base_revision": docedit.revision_of(data),
+        "source": source,
+        "source_id": str(arguments.get("attachment_id", "")),
+        "ops": [{"target_id": s["target_id"], "location": s["location"]} for s in summary],
+        "changed_parts": changed,
+        "warnings": warnings,
+    }
+    try:
+        attachment = await attachments.save_generated_file(
+            ctx.conversation_id, display_name, ext, new_bytes, meta, source_attachment_id=source_id
+        )
+    except ValueError as exc:
+        return ToolResult(content=str(exc), is_error=True)
+    generated.append(attachment.id)
+    ctx.emit({"type": "file", "attachment": AttachmentOut.model_validate(attachment).model_dump(mode="json")})
+    payload = {
+        "ok": True,
+        "file_id": str(attachment.id),
+        "filename": display_name,
+        "new_doc_revision": docedit.revision_of(new_bytes),
+        "applied": summary,
+        "warnings": warnings,
+        "note": ("수정본은 이미 사용자에게 다운로드 카드로 표시됨(원본은 그대로). 무엇을 바꿨는지 간단히 안내할 것. "
+                 "이 수정본을 또 고치려면 새 file_id로 inspect_document부터 다시 호출할 것."),
+    }
+    return ToolResult(content=json.dumps(payload, ensure_ascii=False),
+                      metadata={"generated_attachment_id": attachment.id})
+
+
+INSPECT_DOCUMENT = ToolSpec(
+    name="inspect_document",
+    description=INSPECT_DOCUMENT_DESCRIPTION,
+    parameters=INSPECT_DOCUMENT_PARAMS,
+    executor=_execute_inspect_document,
+    strict=True,
+)
+EDIT_DOCUMENT = ToolSpec(
+    name="edit_document",
+    description=EDIT_DOCUMENT_DESCRIPTION,
+    parameters=EDIT_DOCUMENT_PARAMS,
+    executor=_execute_edit_document,
+    strict=True,
+)
 
 
 # --- 레지스트리 ---
@@ -401,16 +710,28 @@ _REGISTRY: dict[str, ToolSpec] = {
     CREATE_DOCUMENT.name: CREATE_DOCUMENT,
     CREATE_SPREADSHEET.name: CREATE_SPREADSHEET,
     CREATE_PRESENTATION.name: CREATE_PRESENTATION,
+    GENERATE_IMAGE.name: GENERATE_IMAGE,
+    INSPECT_DOCUMENT.name: INSPECT_DOCUMENT,
+    EDIT_DOCUMENT.name: EDIT_DOCUMENT,
 }
 
 
-def get_tool_specs(include_doc_tools: bool = False) -> list[ToolSpec]:
-    """요청에 실을 툴 목록. 문서 툴은 파일 의도가 감지된 턴에만 노출한다
-    (router.needs_file_tools) - 일반 질문에 툴 정의 토큰과 잘못된 호출을 줄이기 위함."""
-    return [
-        spec for spec in _REGISTRY.values()
-        if include_doc_tools or spec.name not in DOC_TOOL_NAMES
-    ]
+def get_tool_specs(
+    include_doc_tools: bool = False,
+    include_image_tools: bool = False,
+    include_edit_tools: bool = False,
+) -> list[ToolSpec]:
+    """요청에 실을 툴 목록. web_search는 항상, 나머지는 의도가 감지된 턴에만
+    노출한다(router.needs_file_tools / needs_image_tools / needs_edit_tools) -
+    일반 질문에 툴 정의 토큰과 잘못된 호출을 줄이기 위함."""
+    specs = [WEB_SEARCH]
+    if include_doc_tools:
+        specs += [CREATE_DOCUMENT, CREATE_SPREADSHEET, CREATE_PRESENTATION]
+    if include_image_tools:
+        specs.append(GENERATE_IMAGE)
+    if include_edit_tools:
+        specs += [INSPECT_DOCUMENT, EDIT_DOCUMENT]
+    return specs
 
 
 async def run_tool(call: dict, ctx_base: dict) -> AsyncIterator[tuple[str, Any]]:
@@ -469,6 +790,9 @@ async def run_tool(call: dict, ctx_base: dict) -> AsyncIterator[tuple[str, Any]]
         except Exception as exc:  # noqa: BLE001
             logger.error("툴 실행 실패 (%s): %s", call["name"], exc, exc_info=True)
             result = ToolResult(content=f"툴 실행 중 오류가 발생했습니다: {exc}", is_error=True)
+        if result.is_error:
+            # 모델이 에러를 사용자에게 다르게 풀어 말할 수 있어서 원문을 남긴다(파일 내용은 없음).
+            logger.warning("툴 에러 결과 (%s): %s", call["name"], result.content[:200].replace("\n", " "))
         for event in result.events:
             yield "event", event
         yield "result", result

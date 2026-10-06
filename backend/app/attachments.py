@@ -365,6 +365,7 @@ async def save_generated_file(
     ext: str,
     content: bytes,
     generation_meta: dict,
+    source_attachment_id: uuid.UUID | None = None,
 ) -> Attachment:
     """모델이 문서 툴로 만든 파일을 uploads/chats/{chat_id}/generated/ 아래에
     UUID 파일명으로 저장하고 Attachment(source='generated', message_id=NULL)로
@@ -392,6 +393,7 @@ async def save_generated_file(
         extracted_text=None,
         extraction_status="done",
         source="generated",
+        source_attachment_id=source_attachment_id,
         generation_meta=json.dumps(generation_meta, ensure_ascii=False),
     )
     async with SessionLocal() as session:

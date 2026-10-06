@@ -15,7 +15,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import attachments as attachments_module
@@ -34,7 +34,7 @@ from app.db_models import (
     UserSettings,
 )
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
-from app.router import bump_size, needs_file_tools, select_model
+from app.router import bump_size, needs_edit_tools, needs_file_tools, needs_image_tools, select_model
 from app.schemas import (
     AttachmentOut,
     ConversationOut,
@@ -59,17 +59,26 @@ MAX_TOOL_ROUNDS = 5
 # 나오므로 기본값(Anthropic 2048 / 그 외 무제한)보다 넉넉하게 명시한다.
 DOC_MAX_OUTPUT_TOKENS = 16000
 
-# 문서 툴이 노출된 턴에만 시스템 프롬프트 맨 끝에 붙는 사용 지침.
+# 수정 의도(inspect/edit_document) 턴의 최대 회차 - inspect → edit → 답변에
+# 검증 실패 재시도나 수정본 재수정이 끼면 5회로는 부족할 수 있다.
+EDIT_MAX_TOOL_ROUNDS = 8
+
+# 문서 툴이나 수정 툴이 노출된 턴에만 시스템 프롬프트 맨 끝에 붙는 사용 지침.
 DOC_TOOLS_GUIDE = (
-    "[파일 생성 지침]\n"
+    "[파일 생성/수정 지침]\n"
     "- 사용자가 파일(워드/PDF/엑셀/CSV/파워포인트/마크다운/텍스트)로 받기를 원하면 "
     "create_document / create_spreadsheet / create_presentation 툴을 호출해.\n"
     "- 툴을 호출하기 전에 장황하게 설명하지 마.\n"
     "- 호출한 뒤에는 만든 파일을 한두 문장으로만 안내하고, 파일 내용을 채팅에 다시 쓰지 마 "
     "(파일은 다운로드 카드로 이미 표시됨).\n"
     "- 단순히 표나 글을 채팅에서 보여 달라는 요청이면 툴을 쓰지 말고 바로 답해.\n"
-    "- 이전 답변 끝의 \"[생성된 파일: ... (id=...)]\" 줄은 시스템이 붙인 기록이야. "
-    "참고만 하고 네 답변에는 절대 그 형식을 쓰지 마."
+    "- 본문 문장에 합계/평균 같은 계산 결과를 쓸 때는 표의 합계 행 값과 일치시키고, "
+    "직접 계산한 숫자는 한 번 더 검산해(실제로 합계를 틀리게 쓴 사례가 있었음).\n"
+    "- 기존 파일을 수정하려면 반드시 inspect_document로 현재 내용을 확인한 뒤 edit_document를 호출해. "
+    "수정하지 못했거나 찾지 못한 항목이 있으면 사실대로 알려.\n"
+    "- 대화 기록의 \"[첨부 파일: ... (id=...)]\", \"[참고자료: ... (id=...)]\", "
+    "\"[생성된 파일: ... (id=...)]\" 줄은 시스템이 붙인 기록이야. id를 툴에 쓰는 데만 참고하고 "
+    "네 답변에는 절대 그 형식을 쓰지 마."
 )
 
 # 루프가 끝났는데 텍스트가 비어 있을 때 저장/표시할 고정 문구.
@@ -253,7 +262,9 @@ def _content_with_attachments(text: str, atts: list[Attachment]) -> str | list[d
     if text:
         blocks.append({"type": "text", "text": text})
     for att in atts:
-        blocks.append({"type": "text", "text": f"[첨부파일: {att.original_name}]"})
+        # 모델이 수정 툴(inspect/edit_document)에 넘길 수 있게 id를 같이 적는다
+        # (모델용 표식일 뿐 DB의 Message.content는 그대로).
+        blocks.append({"type": "text", "text": f"[첨부 파일: {att.original_name} (id={att.id})]"})
         if att.extraction_status == "done":
             blocks.extend(attachments_module.blocks_for_model(att))
         else:
@@ -299,9 +310,29 @@ def _project_reference_blocks(project_files: list[ProjectFile]) -> list[dict]:
         {"type": "text", "text": "[프로젝트 참고자료 목록]\n" + "\n".join(summary_lines)}
     ]
     for pf in project_files:
-        blocks.append({"type": "text", "text": f"[참고자료: {pf.original_name}]"})
+        blocks.append({"type": "text", "text": f"[참고자료: {pf.original_name} (id={pf.id})]"})
         blocks.extend(attachments_module.blocks_for_model(pf))
     return blocks
+
+
+async def _has_files_in_context(session: AsyncSession, conversation_id: UUID, project_id: UUID | None) -> bool:
+    """이 대화(업로드/생성) 또는 프로젝트 참고자료에 수정 가능한 형식의 파일이 있는지."""
+    from app.docedit import supported_formats
+
+    exts = [f".{f}" for f in supported_formats()]  # hwpx는 플래그가 켜졌을 때만 포함
+    conditions = [Attachment.original_name.ilike(f"%{ext}") for ext in exts]
+    found = await session.execute(
+        select(Attachment.id).where(Attachment.chat_id == conversation_id, or_(*conditions)).limit(1)
+    )
+    if found.first() is not None:
+        return True
+    if project_id is None:
+        return False
+    pconds = [ProjectFile.original_name.ilike(f"%{ext}") for ext in exts]
+    found = await session.execute(
+        select(ProjectFile.id).where(ProjectFile.project_id == project_id, or_(*pconds)).limit(1)
+    )
+    return found.first() is not None
 
 
 async def _build_history(
@@ -505,6 +536,33 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 )
                 spec = bumped
 
+            # 이미지 생성 의도는 문서 의도와 독립적으로 본다. 작은 모델로 충분해서
+            # 크기 상향은 하지 않는다.
+            image_tools_enabled, image_reason = needs_image_tools(body.content)
+            if image_tools_enabled:
+                logger.info(
+                    "이미지 의도 감지 (conversation_id=%s, reason=%s)", conversation_id, image_reason
+                )
+
+            # 기존 파일 부분 수정 의도 - 수정 대상이 될 파일이 이번 턴 첨부나 이
+            # 대화(업로드/생성)/프로젝트 참고자료에 있을 때만 본다.
+            from app.docedit import supported_formats
+
+            editable_exts = tuple(f".{f}" for f in supported_formats())
+            has_files_in_context = any(
+                a.original_name.lower().endswith(editable_exts) for a in new_attachments
+            ) or await _has_files_in_context(session, conversation_id, project_id)
+            edit_tools_enabled, edit_reason = needs_edit_tools(
+                body.content, new_attachments, has_files_in_context
+            )
+            if edit_tools_enabled:
+                bumped = bump_size(spec) if body.mode == "auto" else spec
+                logger.info(
+                    "수정 의도 감지 (conversation_id=%s, reason=%s, model=%s→%s)",
+                    conversation_id, edit_reason, spec.display_name, bumped.display_name,
+                )
+                spec = bumped
+
             # 2) meta 이벤트 - 스트리밍 시작 전에 먼저 보내서 프론트가 배지를 바로 그림
             yield _sse(
                 {
@@ -621,7 +679,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
 
             # 문서 툴이 노출되는 턴에만 사용 지침을 맨 끝에 덧붙인다(우선순위
             # 문구 판단 뒤에 붙여야 지침 하나만 있을 때 우선순위 문구가 안 생김).
-            if doc_tools_enabled:
+            if doc_tools_enabled or edit_tools_enabled:
                 system_parts.append(DOC_TOOLS_GUIDE)
 
             if system_parts:
@@ -645,7 +703,15 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             generated_ids: list[UUID] = []
             working = list(history)
             history_len = len(working)
-            tool_specs = tools_module.get_tool_specs(include_doc_tools=doc_tools_enabled)
+            tool_specs = tools_module.get_tool_specs(
+                include_doc_tools=doc_tools_enabled,
+                include_image_tools=image_tools_enabled,
+                include_edit_tools=edit_tools_enabled,
+            )
+            # 수정 흐름은 inspect → edit → 답변이 기본이고, 검증 실패 시 다시
+            # inspect → edit, 수정본을 이어서 고치면 inspect/edit가 한 번 더 들어가서
+            # 기본 5회로는 마지막 회차(툴 금지)에 막힐 수 있다 → 수정 의도 턴만 늘린다.
+            max_rounds = EDIT_MAX_TOOL_ROUNDS if edit_tools_enabled else MAX_TOOL_ROUNDS
             # 문서 툴 인자(본문 전체 JSON)는 길어서, 노출된 턴은 모든 회차의
             # 출력 상한을 올린다. 그 외 턴은 None(기존 동작 그대로).
             max_output_tokens = DOC_MAX_OUTPUT_TOKENS if doc_tools_enabled else None
@@ -657,8 +723,8 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 "turn_state": {},
             }
             try:
-                for round_index in range(MAX_TOOL_ROUNDS):
-                    is_last_round = round_index == MAX_TOOL_ROUNDS - 1
+                for round_index in range(max_rounds):
+                    is_last_round = round_index == max_rounds - 1
                     round_text = ""
                     round_calls: list[dict] = []
                     round_usage: dict[str, int] = {}
@@ -689,6 +755,11 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                         if round_usage.get(key) is not None:
                             usage[key] = (usage.get(key) or 0) + round_usage[key]
 
+                    if round_calls:
+                        logger.info(
+                            "툴 호출 (conversation_id=%s, round=%d, tools=%s)",
+                            conversation_id, round_index + 1, [c["name"] for c in round_calls],
+                        )
                     if not round_calls or is_last_round:
                         break
 

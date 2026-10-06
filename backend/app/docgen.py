@@ -67,7 +67,7 @@ def sanitize_filename(name: str, fallback: str) -> str:
         cleaned = _FILENAME_FORBIDDEN.sub("", candidate or "")
         cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(".")
         # 모델이 확장자를 붙여 보낸 경우 중복되지 않게 뗀다
-        cleaned = re.sub(r"\.(docx|pdf|md|txt|xlsx|csv|pptx)$", "", cleaned, flags=re.I)
+        cleaned = re.sub(r"\.(docx|pdf|md|txt|xlsx|csv|pptx|hwpx)$", "", cleaned, flags=re.I)
         if cleaned:
             return cleaned[:80]
     return "문서"
@@ -114,9 +114,15 @@ MAX_TABLE_ROWS = 200
 DOC_BLOCK_TYPES = ("heading", "paragraph", "bullets", "numbered", "table")
 
 
+def document_formats() -> tuple[str, ...]:
+    """create_document가 받는 형식."""
+    return ("docx", "pdf", "md", "txt", "hwpx")
+
+
 def _validate_document(args: dict, warnings: _Warnings) -> list[dict]:
-    _require(args.get("format") in ("docx", "pdf", "md", "txt"),
-             f"format은 docx/pdf/md/txt 중 하나여야 합니다 (받은 값: {args.get('format')!r})")
+    formats = document_formats()
+    _require(args.get("format") in formats,
+             f"format은 {'/'.join(formats)} 중 하나여야 합니다 (받은 값: {args.get('format')!r})")
     _require(isinstance(args.get("title"), str), "title은 문자열이어야 합니다")
     blocks = args.get("blocks")
     _require(isinstance(blocks, list), "blocks는 배열이어야 합니다")
@@ -321,6 +327,36 @@ def _build_text(title: str, blocks: list[dict]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _build_hwpx(title: str, blocks: list[dict], warnings: _Warnings) -> bytes:
+    """python-hwpx로 HWPX를 만든다. 제목/문단/표는 라이브러리 API를 그대로
+    쓰고, 목록(bullets/numbered)은 목록 서식 API의 안정성을 검증하지 못해 접두사
+    붙인 문단으로 대체한다. 한글(Hancom)에서 실제로 열리는지는 사람이 확인해야 함."""
+    from hwpx import HwpxDocument
+
+    doc = HwpxDocument.new()
+    if title.strip():
+        doc.add_heading(title, level=1)
+    list_fallback = False
+    for b in blocks:
+        if b["type"] == "heading":
+            doc.add_heading(b["text"], level=min(b["level"] + 1, 3))
+        elif b["type"] == "paragraph":
+            doc.add_paragraph(b["text"])
+        elif b["type"] in ("bullets", "numbered"):
+            list_fallback = True
+            for k, it in enumerate(b["items"], start=1):
+                doc.add_paragraph(f"{'•' if b['type'] == 'bullets' else f'{k}.'} {it}")
+        else:
+            rows = b["rows"]
+            table = doc.add_table(len(rows), len(rows[0]))
+            for r, row in enumerate(rows):
+                for c, value in enumerate(row):
+                    table.set_cell_text(r, c, value)
+    if list_fallback:
+        warnings.add("hwpx는 목록 서식 대신 '•'/'1.' 접두사를 붙인 일반 문단으로 만들었음")
+    return doc.to_bytes()
+
+
 def render_document(args: dict) -> RenderResult:
     warnings = _Warnings()
     blocks = _validate_document(args, warnings)
@@ -335,6 +371,8 @@ def render_document(args: dict) -> RenderResult:
         return RenderResult(_build_markdown(title, blocks).encode("utf-8"), "md", None, warnings, meta)
     if fmt == "txt":
         return RenderResult(_build_text(title, blocks).encode("utf-8"), "txt", None, warnings, meta)
+    if fmt == "hwpx":
+        return RenderResult(_build_hwpx(title, blocks, warnings), "hwpx", None, warnings, meta)
 
     # pdf: 서버 폰트로 만든 docx를 기존 LibreOffice 변환 경로(동시 1개 세마포어,
     # 타임아웃 공유)로 PDF로 바꾼다.

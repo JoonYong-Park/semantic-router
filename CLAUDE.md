@@ -82,7 +82,7 @@ The backend is a flat module layout. Each feature module owns an `APIRouter`, an
 2. Returns a `StreamingResponse` whose generator:
    - selects a model;
    - builds a token-budgeted sliding-window history (`_build_history`, `MAX_CONTEXT_TOKENS`);
-   - runs the **tool loop** (up to `MAX_TOOL_ROUNDS` = 5):
+   - runs the **tool loop** (up to `MAX_TOOL_ROUNDS` = 5, or `EDIT_MAX_TOOL_ROUNDS` = 8 on edit-intent turns, since inspect → edit → answer plus a retry or a re-edit doesn't fit in 5):
      - each round is one `providers.stream_model_with_tools()` call;
      - text streams out immediately as `chunk`;
      - if the model returned tool calls, every call is executed through `tools.run_tool()`, an assistant message (with `tool_calls`) and one `tool` message per call are appended to a working copy of the history, and the loop calls the model again;
@@ -102,7 +102,7 @@ System-prompt context is injected in a fixed precedence order: personal instruct
 - `onFile` also clears `processingMessage`.
 
 **tools.py** is the tool registry. A tool is a `ToolSpec`:
-- `name`, `description`, `parameters` (JSON Schema), `strict` (on for the document tools, off for `web_search`);
+- `name`, `description`, `parameters` (JSON Schema), `strict` (on for every tool except `web_search`);
 - `executor(arguments, ctx) -> ToolResult`.
 
 `ToolContext` carries the conversation/project/user ids, a session factory, and `emit()`, which sends an SSE event while the tool is still running (web_search uses it for `searching`). `ToolResult` carries:
@@ -111,7 +111,7 @@ System-prompt context is injected in a fixed precedence order: personal instruct
 - `events`, SSE events sent after the tool finishes;
 - `metadata`, values for the loop that the model never sees.
 
-Registered tools are `web_search` (Tavily) plus the three document tools below. Search failure and zero results are both reported to the model. `get_tool_specs(include_doc_tools=...)` decides what is sent each turn. `ToolContext.turn_state` is shared by all calls in one turn (e.g. the generated-file count).
+Registered tools: `web_search` (Tavily, always sent), three document tools, `generate_image`, and `inspect_document` / `edit_document`. Search failure and zero results are both reported to the model. `get_tool_specs(include_doc_tools, include_image_tools, include_edit_tools)` decides what is sent each turn; each group has its own intent detector in `router.py`. `ToolContext.turn_state` is shared by all calls in one turn (generated-file count, image count). `run_tool` logs every `is_error` result (`툴 에러 결과`, first 200 chars), and the loop logs tool names per round (`툴 호출`), so model paraphrases of errors can be traced.
 
 To add a tool:
 1. Write an async executor that returns a `ToolResult`. Use `ctx.emit` for progress; don't raise for expected failures, return `is_error=True` instead.
@@ -146,6 +146,83 @@ To add a tool:
   1. Add a branch in the matching `render_*` and its `ext` to `MIME_BY_EXT` in `attachments.py`.
   2. Extend the tool's `format` enum and description.
   3. Check that the frontend card icon (`AttachmentTypeIcon`) handles the extension.
+
+**Image tool** (`generate_image` in `tools.py`, API call `providers.generate_image`):
+- **API:** OpenAI Images API (`/v1/images/generations`, `b64_json`). The model is the `IMAGE_MODEL` constant in `tools.py` (`gpt-image-2.5-flare`).
+- **Arguments:**
+  - `aspect_ratio` square / landscape / portrait → 1024x1024 / 1536x1024 / 1024x1536;
+  - `quality` standard / high → medium / high;
+  - `format` png / jpg (jpg is re-encoded by Pillow, RGB, quality 90).
+- **Timeout:** its own 180s client (`IMAGE_TIMEOUT`), separate from streaming.
+- **Limits:**
+  - 2 images per turn;
+  - no per-user daily limit (removed by decision). Note that image API cost is also not counted in the token quota (see below), so nothing else caps it.
+- **Errors:** 429, content-policy rejections, and other failures each return a different `is_error` message.
+- **What is recorded:**
+  - `generation_meta` stores kind, model, size, quality, and format, never the prompt;
+  - usage is not added to the token quota ring; only model/size/quality/elapsed time are logged.
+- **Intent:** `router.needs_image_tools` only fires on an image noun plus a create verb, or explicit phrases ("그려줘"). Phrases like "도커 이미지" or "이미지 분석" are excluded. No model-size bump.
+- **Display:** the frontend card shows an inline thumbnail for `image/*` attachments.
+
+**Edit tools** (`inspect_document` / `edit_document` in `tools.py`, implementation in `docedit.py`) edit an existing xlsx/docx/pptx/hwpx in place.
+- **Inspect:** returns `doc_revision` (sha256 of the file, first 12 chars), then one line per element: opaque id (`e12`), location (sheet/cell with header and row-label context, paragraph number, table row/column, slide/shape, notes), current value (≤200 chars), format summary, and editable or the reason it isn't.
+  - Ids are deterministic for a given revision: the whole file is traversed and `scope` (`all`, `sheet:이름`, `slide:3`, `section:제목`) only filters the output.
+  - Output is capped at 8000 chars and 400 elements per group.
+- **Edit:** takes flat `{op, target_id, expected_old_value, new_value}` operations.
+  - `op` is `set_cell_value` for xlsx and `replace_text` for docx/pptx/hwpx. Adding or deleting rows, paragraphs, or slides is not supported.
+  - At most 50 operations per call.
+  - Everything is validated first: revision, id, editability, `expected_old_value` after whitespace normalization (numeric equality for number cells), and value type. Any failure applies nothing and lists every failing operation.
+- **Output:** always a new generated attachment named `원본_수정.ext` (then `_수정2`…).
+  - `source_attachment_id` points to the original upload or generated file. Project files can't be FK targets, so their id goes in `generation_meta.source_id`.
+  - `generation_meta.kind` is `"edit"`, with `base_revision`, ops, and `changed_parts`.
+  - The original file is only ever read.
+  - The new file has a new id and revision, so a follow-up edit must inspect the new id.
+- **Formatting is preserved by XML patching, not library re-save:**
+  - openpyxl re-save also rewrote `drawing1.xml`, so only edited parts are re-serialized with zip + lxml; every other part is copied byte-for-byte.
+  - Changed parts are xlsx `sheetN.xml` (+ `workbook.xml` `calcPr fullCalcOnLoad` when formulas exist, so totals recalc on open), docx `word/document.xml`, pptx `slideN.xml` / `notesSlideN.xml`, and hwpx `Contents/sectionN.xml`.
+  - xlsx text cells become `inlineStr` (sharedStrings untouched, never a formula) and number/date cells keep their `s` style.
+  - `replace_text` puts the new text in the first run, keeping its formatting, and empties the other runs.
+- **Not editable:** formula cells, hyperlinks, fields, tracked changes, text boxes, headers/footers, content controls, groups, SmartArt, and charts are listed as 수정 불가 and rejected.
+- **File access:**
+  - Files resolve only within this chat, or this chat's project files.
+  - A scan-converted upload whose `stored_path` became a PDF falls back to the original `{id}.{ext}` beside it.
+  - `.hwp` (old 한글 format) is rejected with a "convert to hwpx" message.
+- **Intent:** `router.needs_edit_tools` fires on an edit verb plus a file reference (or an editable attachment), and only when an editable file exists in this turn's attachments, the chat, or the project (`_has_files_in_context`). It bumps auto mode to medium.
+- **History markers:** `_build_history` marks uploads as `[첨부 파일: name (id=...)]`, project files as `[참고자료: name (id=...)]`, and generated files as `[생성된 파일: ...]` so the model can pass ids. `DOC_TOOLS_GUIDE`, sent on doc or edit turns, tells it never to echo these.
+
+**hwpx (한글)** is always enabled; there is no flag.
+- `docgen._build_hwpx` uses python-hwpx (pinned in `backend/requirements-hwpx.txt`, installed in its own Dockerfile layer). Lists become prefixed paragraphs, reported in `warnings`.
+- hwpx edits patch `Contents/section*.xml`.
+- **Not verified:** whether files open in Hancom 한글 was not checked during development; it is being validated by hand. If it fails, the plan is to remove hwpx support entirely. That means removing:
+  - `_build_hwpx`;
+  - `_inspect_hwpx`;
+  - `hwpx` from the enums, descriptions, `supported_formats()`, and `_HWPX_KEYWORDS`;
+  - `requirements-hwpx.txt` and its Dockerfile layer.
+
+**Adding a format or tool — places to touch:**
+- **New output format:**
+  1. A `docgen` renderer branch.
+  2. The `MIME_BY_EXT` entry in `attachments.py`.
+  3. The tool schema enum and description.
+  4. The frontend icon in `AttachmentTypeIcon`.
+- **New editable format:**
+  1. A `docedit._inspect_<fmt>` function plus its entry in `_INSPECTORS`.
+  2. The format in `supported_formats()`.
+  3. The scope rule in `_scope_filter`.
+  4. The ext list used by `_has_files_in_context`, which derives from `supported_formats()`.
+- **New tool:**
+  1. Write the executor and its `ToolSpec`.
+  2. Register it in `_REGISTRY`.
+  3. Add a `get_tool_specs` flag for it.
+  4. Write an intent detector in `router.py`.
+  5. Wire the flag in `send_message`.
+  6. Write a guide line if needed.
+
+**Known limits:**
+- Intent detection is keyword-based and misses phrasing like "이거 정리해서 줘".
+- LibreOffice runs one conversion at a time; PDF generation, previews, and the scan fallback share it.
+- Edit preserves formatting only at the part level. Inside an edited paragraph, emphasis on later runs is lost.
+- No add/delete operations.
 
 **File intent and routing:** `router.needs_file_tools(content, attachments)` is a lenient keyword detector.
 - What triggers it:

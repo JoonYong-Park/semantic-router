@@ -90,8 +90,22 @@ function GeneratedFileCard({
   onOpen?: () => void;
 }) {
   const ext = attachment.original_name.split(".").pop()?.toUpperCase() ?? "";
+  const isImage = attachment.mime_type.startsWith("image/");
   return (
-    <div className="flex w-full max-w-sm items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-2.5 dark:border-gray-700 dark:bg-gray-900">
+    <div className="flex w-full max-w-sm flex-col gap-2">
+      {isImage && conversationId && (
+        // 생성 이미지는 카드 위에 바로 미리보기 - 클릭하면 기존 뷰어로 크게 본다.
+        <button type="button" onClick={onOpen} disabled={!onOpen} className="block overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={attachmentFileUrl("chat", conversationId, attachment.id)}
+            alt={attachment.original_name}
+            className="max-h-80 w-full object-contain"
+            loading="lazy"
+          />
+        </button>
+      )}
+    <div className="flex w-full items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-2.5 dark:border-gray-700 dark:bg-gray-900">
       <button
         type="button"
         onClick={onOpen}
@@ -121,6 +135,7 @@ function GeneratedFileCard({
           <DownloadIcon />
         </a>
       )}
+    </div>
     </div>
   );
 }
