@@ -40,8 +40,12 @@ Model IDs and routing maps live in [backend/app/models_config.py](backend/app/mo
 - **Attachment preview** — click an attached file's chip (before or after sending) to open it in a modal viewer: text/markdown inline, CSV/XLSX as a table, images and PDFs rendered directly, and DOCX/PPTX converted to PDF on first view.
 - **Project folders** — group related chat rooms under a project that has its own instruction, reference files, and memory, scoped only to that project's chats. Each project gets its own page (`/projects/{id}`); chats can be dragged in and out of a project, and folders can be pinned, color-coded, and renamed from the sidebar.
 - **Memory settings** — a dedicated view lists every auto-extracted memory fact, both global and per-project, with a delete button on each so you can correct or remove anything the model shouldn't keep remembering.
+- **Document generation** — ask for a file ("make this a Word file", "put it in Excel", "build a 5-slide deck") and the model creates DOCX, PDF, Markdown, TXT, XLSX, CSV, PPTX, or HWPX (한글). The file appears as a download card in the chat and stays there after a refresh.
+- **File conversion** — attach a file and ask for another format (e.g. Excel → Word report, PDF table → Excel, Word → slides, HWPX → DOCX); the attachment's extracted content becomes the new file.
+- **In-place file editing** — attach an XLSX, DOCX, PPTX, or HWPX and ask for a change ("change Q3 revenue to 1,200", "rename the title"). The model inspects the file, edits only the targeted cells or text, and saves a new `원본_수정` copy, leaving the original untouched and keeping charts, images, and formatting. You can keep editing the new copy in follow-up turns.
+- **Image generation** — ask for an image, illustration, banner, or background, and it is generated with OpenAI's image model and shown as a card with an inline preview and a download button.
 
-More features are planned (rate limiting, PPT/Excel export, etc.) — this list will grow with a short bullet per feature as they land.
+More features are planned (rate limiting, etc.) — this list will grow with a short bullet per feature as they land.
 
 ## Memory
 
@@ -75,6 +79,24 @@ Each of the 9 supported formats is handled differently depending on how well the
 | Passed directly to the vision model | IMG (jpg/png, etc.) | Converted to PNG and resized (max 1568px) via Pillow, then passed directly to the vision model |
 
 If a hybrid format (DOCX/PPTX/HWP) has no extractable text at all (e.g. a scanned document), it's converted to PDF with LibreOffice and treated like a native PDF attachment instead (see [extraction.py](backend/app/extraction.py)).
+
+## File generation & editing
+
+The routed model calls these as tools. Each tool is only offered when the message looks like a file, image, or edit request, so ordinary questions are unaffected. Every result is saved as a new file in the chat and shown as a download card. Clicking the card opens the same preview viewer as attachments.
+
+| What you ask for | Formats | How it works |
+| --- | --- | --- |
+| Create a document | DOCX, PDF, MD, TXT, HWPX | The model sends structured content (headings, paragraphs, lists, tables). The server renders it. Office files use 맑은 고딕. PDF is a DOCX converted with LibreOffice using a Korean font. |
+| Create a spreadsheet | XLSX, CSV | Values are typed per column (number, currency, percent, date) and formatted by the server. Totals are real `SUM` formulas. Text cells can never become formulas. |
+| Create a presentation | PPTX (16:9) | Title, section, bullets, two-column, and table layouts, with speaker notes. |
+| Convert an attachment | Any of the above | Same tools, using the attachment's extracted content. |
+| Edit an existing file | XLSX, DOCX, PPTX, HWPX | The model first inspects the file (cells, paragraphs, slides, table cells, notes), then submits edits, which are rejected unless the current value matches what it saw. Only the edited XML parts are rewritten, so charts, images, and styles stay byte-for-byte intact. The original is never modified; the result is `원본_수정.ext`. Formula cells, hyperlinks, and text boxes are read-only, and adding or deleting rows or slides isn't supported. |
+| Generate an image | PNG, JPG | Square, landscape, or portrait image via OpenAI's Images API. Up to 2 images per reply. |
+
+Limits:
+- 25MB per generated file.
+- 5 generated files per reply.
+- Generated files are deleted with their chat.
 
 ## Run
 

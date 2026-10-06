@@ -15,6 +15,10 @@ RUN pip install --no-cache-dir \
       --extra-index-url https://download.pytorch.org/whl/cpu \
       -r requirements.txt
 
+# hwpx 의존성은 별도 레이어 - 위 메인 레이어 캐시를 깨지 않게 분리
+COPY requirements-hwpx.txt .
+RUN pip install --no-cache-dir -r requirements-hwpx.txt
+
 COPY app ./app
 
 ENV HF_HOME=/app/hf-cache

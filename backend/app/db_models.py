@@ -252,6 +252,20 @@ class Attachment(Base):
     extraction_status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="pending"
     )
+    # "upload"(사용자가 올린 첨부) | "generated"(모델이 문서 툴로 만든 파일).
+    # generated는 assistant 메시지에 연결되고, 모델 히스토리에는 블록 대신
+    # "[생성된 파일: ...]" 표식으로만 들어간다(conversations._build_history).
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="upload", server_default="upload"
+    )
+    # 변환(트랙 2/3)에서 원본 첨부를 추적하기 위한 자리 - 아직 채우지 않음.
+    source_attachment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("attachments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # 생성 파일 메타(JSON 텍스트): tool, format, title, 블록/시트/슬라이드 수, 경고 등
+    generation_meta: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -261,6 +275,7 @@ class Attachment(Base):
         Index("ix_attachments_message_id", "message_id"),
         # 고아 첨부(message_id IS NULL) 정리 배치가 created_at으로 스캔하므로.
         Index("ix_attachments_orphan_created", "message_id", "created_at"),
+        Index("ix_attachments_message_source", "message_id", "source"),
     )
 
 

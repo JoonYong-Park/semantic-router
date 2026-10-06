@@ -15,11 +15,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import attachments as attachments_module
 from app import classifier, complexity, providers
+from app import tools as tools_module
 from app.db import SessionLocal, get_session
 from app.db_models import (
     DEMO_USER_ID,
@@ -33,7 +34,7 @@ from app.db_models import (
     UserSettings,
 )
 from app.models_config import DEFAULT_MANUAL_SIZE, get_model
-from app.router import select_model
+from app.router import bump_size, needs_edit_tools, needs_file_tools, needs_image_tools, select_model
 from app.schemas import (
     AttachmentOut,
     ConversationOut,
@@ -49,6 +50,40 @@ logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 MAX_CONTEXT_TOKENS = 16000
+
+# 한 턴 안에서 "모델 호출 → 툴 실행"을 반복하는 최대 횟수. 마지막 회차는
+# tools 없이 호출해서 최종 답변을 강제한다(툴만 계속 부르는 무한 루프 방지).
+MAX_TOOL_ROUNDS = 5
+
+# 문서 툴이 노출된 턴의 회차별 출력 상한 - 문서 본문 전체가 툴 인자 JSON으로
+# 나오므로 기본값(Anthropic 2048 / 그 외 무제한)보다 넉넉하게 명시한다.
+DOC_MAX_OUTPUT_TOKENS = 16000
+
+# 수정 의도(inspect/edit_document) 턴의 최대 회차 - inspect → edit → 답변에
+# 검증 실패 재시도나 수정본 재수정이 끼면 5회로는 부족할 수 있다.
+EDIT_MAX_TOOL_ROUNDS = 8
+
+# 문서 툴이나 수정 툴이 노출된 턴에만 시스템 프롬프트 맨 끝에 붙는 사용 지침.
+DOC_TOOLS_GUIDE = (
+    "[파일 생성/수정 지침]\n"
+    "- 사용자가 파일(워드/PDF/엑셀/CSV/파워포인트/마크다운/텍스트)로 받기를 원하면 "
+    "create_document / create_spreadsheet / create_presentation 툴을 호출해.\n"
+    "- 툴을 호출하기 전에 장황하게 설명하지 마.\n"
+    "- 호출한 뒤에는 만든 파일을 한두 문장으로만 안내하고, 파일 내용을 채팅에 다시 쓰지 마 "
+    "(파일은 다운로드 카드로 이미 표시됨).\n"
+    "- 단순히 표나 글을 채팅에서 보여 달라는 요청이면 툴을 쓰지 말고 바로 답해.\n"
+    "- 본문 문장에 합계/평균 같은 계산 결과를 쓸 때는 표의 합계 행 값과 일치시키고, "
+    "직접 계산한 숫자는 한 번 더 검산해(실제로 합계를 틀리게 쓴 사례가 있었음).\n"
+    "- 기존 파일을 수정하려면 반드시 inspect_document로 현재 내용을 확인한 뒤 edit_document를 호출해. "
+    "수정하지 못했거나 찾지 못한 항목이 있으면 사실대로 알려.\n"
+    "- 대화 기록의 \"[첨부 파일: ... (id=...)]\", \"[참고자료: ... (id=...)]\", "
+    "\"[생성된 파일: ... (id=...)]\" 줄은 시스템이 붙인 기록이야. id를 툴에 쓰는 데만 참고하고 "
+    "네 답변에는 절대 그 형식을 쓰지 마."
+)
+
+# 루프가 끝났는데 텍스트가 비어 있을 때 저장/표시할 고정 문구.
+EMPTY_ANSWER = "응답을 완성하지 못했어요. 다시 시도해 주세요."
+FILES_ONLY_ANSWER = "파일을 생성했습니다."
 
 # 업로드 응답은 추출 완료를 기다리지 않고 바로 돌아오므로("pending" 상태로
 # 전송 버튼을 즉시 누를 수 있게 하기 위함, attachments.py 참고), 실제 모델
@@ -227,7 +262,9 @@ def _content_with_attachments(text: str, atts: list[Attachment]) -> str | list[d
     if text:
         blocks.append({"type": "text", "text": text})
     for att in atts:
-        blocks.append({"type": "text", "text": f"[첨부파일: {att.original_name}]"})
+        # 모델이 수정 툴(inspect/edit_document)에 넘길 수 있게 id를 같이 적는다
+        # (모델용 표식일 뿐 DB의 Message.content는 그대로).
+        blocks.append({"type": "text", "text": f"[첨부 파일: {att.original_name} (id={att.id})]"})
         if att.extraction_status == "done":
             blocks.extend(attachments_module.blocks_for_model(att))
         else:
@@ -273,9 +310,29 @@ def _project_reference_blocks(project_files: list[ProjectFile]) -> list[dict]:
         {"type": "text", "text": "[프로젝트 참고자료 목록]\n" + "\n".join(summary_lines)}
     ]
     for pf in project_files:
-        blocks.append({"type": "text", "text": f"[참고자료: {pf.original_name}]"})
+        blocks.append({"type": "text", "text": f"[참고자료: {pf.original_name} (id={pf.id})]"})
         blocks.extend(attachments_module.blocks_for_model(pf))
     return blocks
+
+
+async def _has_files_in_context(session: AsyncSession, conversation_id: UUID, project_id: UUID | None) -> bool:
+    """이 대화(업로드/생성) 또는 프로젝트 참고자료에 수정 가능한 형식의 파일이 있는지."""
+    from app.docedit import supported_formats
+
+    exts = [f".{f}" for f in supported_formats()]  # hwpx는 플래그가 켜졌을 때만 포함
+    conditions = [Attachment.original_name.ilike(f"%{ext}") for ext in exts]
+    found = await session.execute(
+        select(Attachment.id).where(Attachment.chat_id == conversation_id, or_(*conditions)).limit(1)
+    )
+    if found.first() is not None:
+        return True
+    if project_id is None:
+        return False
+    pconds = [ProjectFile.original_name.ilike(f"%{ext}") for ext in exts]
+    found = await session.execute(
+        select(ProjectFile.id).where(ProjectFile.project_id == project_id, or_(*pconds)).limit(1)
+    )
+    return found.first() is not None
 
 
 async def _build_history(
@@ -317,20 +374,35 @@ async def _build_history(
     selected.reverse()
 
     attachments_by_msg: dict[UUID, list[Attachment]] = {}
+    generated_by_msg: dict[UUID, list[Attachment]] = {}
     msg_ids = [m.id for m in selected]
     if msg_ids:
         att_result = await session.execute(
             select(Attachment).where(Attachment.message_id.in_(msg_ids))
         )
         for att in att_result.scalars().all():
-            attachments_by_msg.setdefault(att.message_id, []).append(att)
+            # 모델이 만든 파일(assistant 메시지에 연결됨)은 content 블록으로 넣지
+            # 않는다 - assistant 메시지에 문서/이미지 블록이 섞이면 provider가
+            # 400을 낸다. 대신 아래에서 텍스트 표식만 붙인다.
+            target = generated_by_msg if att.source == "generated" else attachments_by_msg
+            target.setdefault(att.message_id, []).append(att)
+
+    def _model_text(m: Message) -> str:
+        # DB의 Message.content는 그대로 두고(UI/메모리 추출 영향 없음) 모델에
+        # 보내는 텍스트 끝에만 생성 파일 표식을 붙여, 다음 턴에 모델이 직전에
+        # 만든 파일을 언급할 수 있게 한다.
+        generated = generated_by_msg.get(m.id, [])
+        if not generated:
+            return m.content
+        markers = "\n".join(f"[생성된 파일: {a.original_name} (id={a.id})]" for a in generated)
+        return f"{m.content}\n\n{markers}" if m.content else markers
 
     return [
         *[
             {
                 "role": m.role,
                 "content": _content_with_attachments(
-                    m.content, attachments_by_msg.get(m.id, [])
+                    _model_text(m), attachments_by_msg.get(m.id, [])
                 ),
             }
             for m in selected
@@ -424,6 +496,22 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
         # FastAPI Depends로 주입된 세션(요청 처리 직후 정리됨)을 쓰면 그 사이 세션이
         # 닫혀버릴 수 있다. 그래서 여기서 새 세션을 직접 연다.
         async with SessionLocal() as session:
+            # 이번 턴에 참조된 첨부파일 조회 - 이 채팅방 소유이면서 아직 다른
+            # 메시지에 붙지 않은(message_id IS NULL) 사용자 업로드만 유효하다고 본다
+            # (이미 전송된 첨부나 모델이 만든 파일을 재사용하려는 요청은 조용히 무시).
+            # 파일 의도 감지(첨부 형식 참고)가 라우팅보다 먼저 필요해서 맨 앞에서 조회한다.
+            new_attachments: list[Attachment] = []
+            if body.attachment_ids:
+                att_result = await session.execute(
+                    select(Attachment).where(
+                        Attachment.id.in_(body.attachment_ids),
+                        Attachment.chat_id == conversation_id,
+                        Attachment.message_id.is_(None),
+                        Attachment.source == "upload",
+                    )
+                )
+                new_attachments = list(att_result.scalars().all())
+
             # 1) 라우팅 결정 (기존 classifier/complexity/router 그대로 사용)
             task_category: str | None = None
             complexity_score: float | None = None
@@ -436,6 +524,45 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             else:
                 spec = get_model(body.mode, body.size or DEFAULT_MANUAL_SIZE)
 
+            # 파일 생성/변환 의도가 보이면 문서 툴을 노출하고, auto 모드에서만
+            # medium 이상으로 올린다(manual 모드는 사용자가 고른 크기 유지).
+            # 로그에는 걸린 키워드만 남긴다(메시지 본문은 안 남김).
+            doc_tools_enabled, intent_reason = needs_file_tools(body.content, new_attachments)
+            if doc_tools_enabled:
+                bumped = bump_size(spec) if body.mode == "auto" else spec
+                logger.info(
+                    "파일 의도 감지 (conversation_id=%s, reason=%s, model=%s→%s)",
+                    conversation_id, intent_reason, spec.display_name, bumped.display_name,
+                )
+                spec = bumped
+
+            # 이미지 생성 의도는 문서 의도와 독립적으로 본다. 작은 모델로 충분해서
+            # 크기 상향은 하지 않는다.
+            image_tools_enabled, image_reason = needs_image_tools(body.content)
+            if image_tools_enabled:
+                logger.info(
+                    "이미지 의도 감지 (conversation_id=%s, reason=%s)", conversation_id, image_reason
+                )
+
+            # 기존 파일 부분 수정 의도 - 수정 대상이 될 파일이 이번 턴 첨부나 이
+            # 대화(업로드/생성)/프로젝트 참고자료에 있을 때만 본다.
+            from app.docedit import supported_formats
+
+            editable_exts = tuple(f".{f}" for f in supported_formats())
+            has_files_in_context = any(
+                a.original_name.lower().endswith(editable_exts) for a in new_attachments
+            ) or await _has_files_in_context(session, conversation_id, project_id)
+            edit_tools_enabled, edit_reason = needs_edit_tools(
+                body.content, new_attachments, has_files_in_context
+            )
+            if edit_tools_enabled:
+                bumped = bump_size(spec) if body.mode == "auto" else spec
+                logger.info(
+                    "수정 의도 감지 (conversation_id=%s, reason=%s, model=%s→%s)",
+                    conversation_id, edit_reason, spec.display_name, bumped.display_name,
+                )
+                spec = bumped
+
             # 2) meta 이벤트 - 스트리밍 시작 전에 먼저 보내서 프론트가 배지를 바로 그림
             yield _sse(
                 {
@@ -445,20 +572,6 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     "complexity": complexity_score,
                 }
             )
-
-            # 이번 턴에 참조된 첨부파일 조회 - 이 채팅방 소유이면서 아직 다른
-            # 메시지에 붙지 않은(message_id IS NULL) 것만 유효하다고 본다
-            # (이미 전송된 첨부를 재사용하려는 요청은 조용히 무시).
-            new_attachments: list[Attachment] = []
-            if body.attachment_ids:
-                att_result = await session.execute(
-                    select(Attachment).where(
-                        Attachment.id.in_(body.attachment_ids),
-                        Attachment.chat_id == conversation_id,
-                        Attachment.message_id.is_(None),
-                    )
-                )
-                new_attachments = list(att_result.scalars().all())
 
             # 업로드 응답이 추출 완료를 기다리지 않고 바로 오므로(첨부 직후
             # 바로 전송 버튼을 누를 수 있게 하기 위함), 여기서 실제 모델
@@ -564,88 +677,130 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 )
                 system_parts = [priority_note] + system_parts
 
+            # 문서 툴이 노출되는 턴에만 사용 지침을 맨 끝에 덧붙인다(우선순위
+            # 문구 판단 뒤에 붙여야 지침 하나만 있을 때 우선순위 문구가 안 생김).
+            if doc_tools_enabled or edit_tools_enabled:
+                system_parts.append(DOC_TOOLS_GUIDE)
+
             if system_parts:
                 history = [
                     {"role": "system", "content": "\n\n".join(system_parts)}
                 ] + history
 
-            # 5) 1차 호출 - 라우팅된 spec 모델 자신이 웹 검색 필요 여부를 판단한다
-            # (ChatGPT/Claude가 실제로 쓰는 방식과 동일 - 판단 전용 별도 모델 없음).
-            # tools를 실어도 스트리밍으로 받아서, 검색 없이 바로 답하는 가장 흔한
-            # 경우에도 토큰 단위로 실시간 전달된다(예전엔 이 1차 호출이
-            # 비스트리밍이라 완성된 텍스트가 한 번에 "툭" 나타났었음). 결과에
-            # 따라 갈린다:
-            #   - 텍스트 조각이 옴 → 그대로 실시간 전달(진짜 스트리밍).
-            #   - 검색 요청이 옴(텍스트를 하나도 안 보낸 채로) → Tavily로 검색 →
-            #     결과를 history에 얹어 같은 spec으로 2차 호출(stream_model()).
-            #   - 드물게 텍스트를 일부 보낸 뒤에 검색 요청이 온 경우(모델이
-            #     "검색해볼게요" 식으로 운을 뗀 뒤 도구를 호출하는 경우) - 이미
-            #     사용자에게 보여준 텍스트를 2차 호출의 독립된 답변과 이어붙이면
-            #     서로 다른 두 답이 뒤섞여 보이므로, 이 경우는 검색을 포기하고
-            #     지금까지 나온 텍스트를 그대로 최종 답으로 둔다.
+            # 5) 툴 루프 - 라우팅된 spec 모델 자신이 툴(웹 검색 등) 사용 여부를
+            # 판단한다(판단 전용 별도 모델 없음). 회차마다 스트리밍으로 받아서
+            # 텍스트는 바로 chunk로 보내고, 툴 호출이 오면 전부 실행해 결과를
+            # 작업용 messages 사본에 붙인 뒤 다시 호출한다. 툴 호출이 없는 응답이
+            # 오면 끝. MAX_TOOL_ROUNDS번째 회차는 툴 호출 없이 최종 답변을
+            # 강제한다(force_final - 벤더별 처리는 providers 참고). 툴 호출/결과는
+            # 이번 요청 안에서만 쓰고 DB에는 최종 텍스트만 저장한다(다음 턴
+            # 히스토리에 툴 메시지는 안 들어감). 문서 툴이 만든 파일은
+            # generated_ids로 모아 assistant 메시지 저장 시 연결한다.
             full_response = ""
             usage: dict[str, int] = {}
             web_search_used = False
             web_search_query: str | None = None
+            generated_ids: list[UUID] = []
+            working = list(history)
+            history_len = len(working)
+            tool_specs = tools_module.get_tool_specs(
+                include_doc_tools=doc_tools_enabled,
+                include_image_tools=image_tools_enabled,
+                include_edit_tools=edit_tools_enabled,
+            )
+            # 수정 흐름은 inspect → edit → 답변이 기본이고, 검증 실패 시 다시
+            # inspect → edit, 수정본을 이어서 고치면 inspect/edit가 한 번 더 들어가서
+            # 기본 5회로는 마지막 회차(툴 금지)에 막힐 수 있다 → 수정 의도 턴만 늘린다.
+            max_rounds = EDIT_MAX_TOOL_ROUNDS if edit_tools_enabled else MAX_TOOL_ROUNDS
+            # 문서 툴 인자(본문 전체 JSON)는 길어서, 노출된 턴은 모든 회차의
+            # 출력 상한을 올린다. 그 외 턴은 None(기존 동작 그대로).
+            max_output_tokens = DOC_MAX_OUTPUT_TOKENS if doc_tools_enabled else None
+            tool_ctx_base = {
+                "conversation_id": conversation_id,
+                "project_id": project_id,
+                "user_id": DEMO_USER_ID,
+                "session_factory": SessionLocal,
+                "turn_state": {},
+            }
             try:
-                tool_call_info: dict | None = None
-                async for event in providers.stream_model_with_tools(
-                    spec, history, usage, reference_block_count
-                ):
-                    if event["type"] == "text":
-                        full_response += event["content"]
-                        yield _sse({"type": "chunk", "content": event["content"]})
-                    elif event["type"] == "tool_call":
-                        tool_call_info = event
-
-                if tool_call_info and not full_response:
-                    web_search_used = True
-                    web_search_query = tool_call_info["query"]
-                    yield _sse({"type": "searching", "query": tool_call_info["query"]})
-
-                    search_results = await providers.tavily_search(
-                        tool_call_info["query"],
-                        max_results=5,
-                        time_range=tool_call_info["time_range"],
-                        site_hint=tool_call_info["site_hint"],
-                    )
-                    # 검색 실패(빈 결과)해도 에러 내지 않고 그냥 검색 결과 없이 계속 진행.
-                    if search_results:
-                        results_text = "\n\n".join(
-                            f"[{i + 1}] {r.get('title', '')}\n{r.get('url', '')}\n"
-                            f"{r.get('content', '')[:500]}"
-                            for i, r in enumerate(search_results)
-                        )
-                        history = history + [
-                            {
-                                "role": "system",
-                                "content": (
-                                    f"[웹 검색 결과: {tool_call_info['query']}]\n{results_text}\n\n"
-                                    "위 검색 결과를 참고해서 답변해. 답변 마지막에 실제로 "
-                                    "참고한 출처만 아래 형식으로 표시해 (참고 안 한 결과는 빼고, "
-                                    "위 검색 결과에 없는 URL은 지어내지 마):\n"
-                                    "---\n출처:\n- [번호] 제목 (URL)"
-                                ),
-                            }
-                        ]
-
-                    # 1차 호출(판단) 토큰은 이미 usage에 쌓여 있으니, 2차 호출은
-                    # 같은 dict에 이어서 쌓이지 않도록 별도로 받아서 합산한다.
-                    second_call_usage: dict[str, int] = {}
-                    async for chunk in providers.stream_model(
-                        spec, history, second_call_usage, reference_block_count
+                for round_index in range(max_rounds):
+                    is_last_round = round_index == max_rounds - 1
+                    round_text = ""
+                    round_calls: list[dict] = []
+                    round_usage: dict[str, int] = {}
+                    async for event in providers.stream_model_with_tools(
+                        spec,
+                        working,
+                        tool_specs,
+                        round_usage,
+                        reference_block_count,
+                        history_len,
+                        max_output_tokens=max_output_tokens,
+                        force_final=is_last_round,
                     ):
-                        full_response += chunk
-                        yield _sse({"type": "chunk", "content": chunk})
+                        if event["type"] == "text":
+                            piece = event["content"]
+                            # 앞 회차에서 이미 텍스트를 보냈으면 회차 사이를 띄운다
+                            # ("파일 만들어 드릴게요" → 툴 실행 → 최종 답변 같은 흐름).
+                            if not round_text and full_response:
+                                piece = "\n\n" + piece
+                            round_text += event["content"]
+                            full_response += piece
+                            yield _sse({"type": "chunk", "content": piece})
+                        elif event["type"] == "tool_call":
+                            round_calls.append(event)
 
-                    # 이번 턴은 API 호출이 두 번(판단 호출 + 검색 후 답변 호출)이라,
-                    # 실제 청구 토큰도 둘을 합쳐야 이번 턴의 진짜 사용량이 된다.
-                    usage["input_tokens"] = (usage.get("input_tokens") or 0) + (
-                        second_call_usage.get("input_tokens") or 0
+                    # 회차마다 API 호출이 따로 청구되므로 실제 사용량은 전부 합산.
+                    for key in ("input_tokens", "output_tokens"):
+                        if round_usage.get(key) is not None:
+                            usage[key] = (usage.get(key) or 0) + round_usage[key]
+
+                    if round_calls:
+                        logger.info(
+                            "툴 호출 (conversation_id=%s, round=%d, tools=%s)",
+                            conversation_id, round_index + 1, [c["name"] for c in round_calls],
+                        )
+                    if not round_calls or is_last_round:
+                        break
+
+                    working.append(
+                        {
+                            "role": "assistant",
+                            "content": round_text,
+                            "tool_calls": [
+                                {
+                                    "id": c["id"],
+                                    "name": c["name"],
+                                    "arguments": c["arguments"] or {},
+                                    "provider_extra": c["provider_extra"],
+                                }
+                                for c in round_calls
+                            ],
+                        }
                     )
-                    usage["output_tokens"] = (usage.get("output_tokens") or 0) + (
-                        second_call_usage.get("output_tokens") or 0
-                    )
+                    # 병렬 호출을 꺼뒀어도 여러 개가 올 수 있다 - 모든 호출에 결과를
+                    # 돌려줘야 다음 요청이 400이 안 나므로 순서대로 전부 실행한다.
+                    for call in round_calls:
+                        result: tools_module.ToolResult | None = None
+                        async for kind, payload in tools_module.run_tool(call, tool_ctx_base):
+                            if kind == "event":
+                                yield _sse(payload)
+                            else:
+                                result = payload
+                        if result.metadata.get("web_search_query") and not web_search_used:
+                            web_search_used = True
+                            web_search_query = result.metadata["web_search_query"]
+                        if result.metadata.get("generated_attachment_id"):
+                            generated_ids.append(result.metadata["generated_attachment_id"])
+                        working.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call["id"],
+                                "name": call["name"],
+                                "content": result.content,
+                                "is_error": result.is_error,
+                            }
+                        )
             except Exception as exc:  # noqa: BLE001
                 # 실패한 턴은 assistant 메시지를 저장하지 않고 그냥 끝나기 때문에,
                 # 나중에 DB만 봐서는 왜 응답이 없는지 알 수 없다 - 여기서 로그로
@@ -657,8 +812,17 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     exc,
                     exc_info=True,
                 )
-                yield _sse({"type": "error", "message": f"모델 호출 실패: {exc}"})
-                return
+                if not generated_ids:
+                    yield _sse({"type": "error", "message": f"모델 호출 실패: {exc}"})
+                    return
+                # 이번 턴에 이미 만든 파일이 있으면 카드가 사라지지 않게 에러 대신
+                # 지금까지의 텍스트(없으면 고정 문구)로 정상 마무리하고 저장/연결한다.
+
+            # 빈 최종 답변 방어 - 벤더 불문 빈 답변이 저장되지 않게 고정 문구로 대체.
+            if not full_response.strip():
+                fallback = FILES_ONLY_ANSWER if generated_ids else EMPTY_ANSWER
+                full_response = fallback
+                yield _sse({"type": "chunk", "content": fallback})
 
             # 6) 완료 신호
             yield _sse({"type": "done"})
@@ -669,13 +833,18 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             input_tokens = usage.get("input_tokens")
             if input_tokens is None:
                 input_tokens = sum(
-                    estimate_content_tokens(m["content"]) for m in history
+                    estimate_content_tokens(m["content"]) for m in working
                 )
             output_tokens = usage.get("output_tokens")
             if output_tokens is None:
                 output_tokens = count_tokens(full_response)
+            # 생성 파일을 이 메시지에 연결해야 해서 id를 미리 만든다 - 사용자
+            # 메시지 + 첨부 연결과 같은 패턴(relationship이 없어 flush로 INSERT
+            # 순서를 먼저 보장한 뒤 첨부의 message_id를 채움).
+            assistant_message_id = uuid_module.uuid4()
             session.add(
                 Message(
+                    id=assistant_message_id,
                     conversation_id=conversation_id,
                     role="assistant",
                     content=full_response,
@@ -688,6 +857,16 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     web_search_query=web_search_query,
                 )
             )
+            if generated_ids:
+                await session.flush()
+                await session.execute(
+                    Attachment.__table__.update()
+                    .where(
+                        Attachment.id.in_(generated_ids),
+                        Attachment.chat_id == conversation_id,
+                    )
+                    .values(message_id=assistant_message_id)
+                )
             await session.execute(
                 Conversation.__table__.update()
                 .where(Conversation.id == conversation_id)

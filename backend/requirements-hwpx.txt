@@ -1,0 +1,4 @@
+# hwpx(한글) 생성/수정용. 메인 requirements.txt와 분리해
+# Dockerfile의 별도 RUN 레이어에서 설치한다 - 여기만 바뀌어도 torch가 든 메인
+# pip 레이어 캐시가 깨지지 않게 하기 위함. API 변경이 잦은 라이브러리라 버전 고정.
+python-hwpx==6.7.0

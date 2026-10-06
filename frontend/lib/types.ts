@@ -65,6 +65,8 @@ export interface AttachmentOut {
   mime_type: string;
   size_bytes: number;
   extraction_status: "pending" | "done" | "failed";
+  // "upload": 사용자가 올린 첨부, "generated": 모델이 문서 툴로 만든 파일(assistant 메시지에 붙음)
+  source: "upload" | "generated";
   created_at: string;
 }
 
@@ -216,6 +218,7 @@ export type StreamEvent =
   | { type: "meta"; model: string; category: string | null; complexity: number | null }
   | { type: "searching"; query: string }
   | { type: "processing"; message: string }
+  | { type: "file"; attachment: AttachmentOut }
   | { type: "chunk"; content: string }
   | { type: "done" }
   | { type: "error"; message: string };

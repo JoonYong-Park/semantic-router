@@ -126,6 +126,7 @@ export default function Home() {
         mime_type: a.file.type || "application/octet-stream",
         size_bytes: a.file.size,
         extraction_status: "done",
+        source: "upload",
         created_at: new Date().toISOString(),
       })),
     });

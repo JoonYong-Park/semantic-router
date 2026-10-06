@@ -506,6 +506,7 @@ export async function streamMessage(
     onMeta: (meta: { model: string; category: string | null; complexity: number | null }) => void;
     onSearching: (query: string) => void;
     onProcessing: (message: string) => void;
+    onFile: (attachment: AttachmentOut) => void;
     onChunk: (content: string) => void;
     onDone: () => void;
     onError: (message: string) => void;
@@ -581,6 +582,8 @@ export async function streamMessage(
         handlers.onSearching(data.query as string);
       } else if (data.type === "processing") {
         handlers.onProcessing(data.message as string);
+      } else if (data.type === "file") {
+        handlers.onFile(data.attachment as AttachmentOut);
       } else if (data.type === "chunk") {
         handlers.onChunk(data.content as string);
       } else if (data.type === "done") {
