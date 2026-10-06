@@ -369,6 +369,11 @@ async def stream_model_with_tools(
                             try:
                                 args = json.loads(tool_json_buffer or "{}")
                             except json.JSONDecodeError:
+                                logger.warning(
+                                    "툴 인자 JSON 파싱 실패 (model=%s): %s",
+                                    spec.model_id,
+                                    tool_json_buffer[:200],
+                                )
                                 args = {}
                             query = args.get("query")
                             if query:
@@ -418,10 +423,12 @@ async def stream_model_with_tools(
                 )
                 _raise_for_status_logged(resp_for_raise)
 
-            # tool_calls도 arguments가 여러 청크로 쪼개져 오므로 index별로 모은다
-            # (우리는 tool을 하나만 등록해서 index=0 하나만 쓰면 되지만, 공급사가
-            # 그래도 index를 붙여서 보내므로 그대로 따라간다).
-            tool_call_buffers: dict[int, dict[str, str]] = {}
+            # tool_calls도 arguments가 여러 청크로 쪼개져 오므로 호출별로 모은다.
+            # OpenAI는 index로 구분해서 보내지만, Gemini(OpenAI 호환)는 index 키
+            # 없이 호출마다 id를 붙여 보낸다(실측) - index가 없으면 id로, id도
+            # 없으면 등장 순서로 버퍼를 구분해서 병렬 호출 인자가 한 문자열로
+            # 이어 붙지 않게 한다.
+            tool_call_buffers: dict[int | str, dict[str, str]] = {}
 
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):
@@ -446,17 +453,34 @@ async def stream_model_with_tools(
                     yield {"type": "text", "content": content}
 
                 for tc in delta.get("tool_calls") or []:
-                    idx = tc.get("index", 0)
-                    buf = tool_call_buffers.setdefault(idx, {"arguments": ""})
+                    key = tc.get("index")
+                    if key is None:
+                        key = tc.get("id") or f"pos-{len(tool_call_buffers)}"
+                    buf = tool_call_buffers.setdefault(key, {"arguments": ""})
                     fn = tc.get("function") or {}
                     if fn.get("arguments"):
                         buf["arguments"] += fn["arguments"]
 
-                if choice.get("finish_reason") == "tool_calls":
-                    buf = tool_call_buffers.get(0, {"arguments": "{}"})
+                # OpenAI는 툴을 호출하면 finish_reason이 "tool_calls"로 오지만,
+                # Gemini(OpenAI 호환)는 툴을 호출해도 "stop"으로 온다(실측) -
+                # 그래서 Google은 "stop"이어도 버퍼에 툴 호출이 있으면 처리한다.
+                finish_reason = choice.get("finish_reason")
+                if finish_reason == "tool_calls" or (
+                    spec.company == "google"
+                    and finish_reason == "stop"
+                    and tool_call_buffers
+                ):
+                    # 지금 구조는 툴 호출 하나만 처리한다(첫 번째 호출 - OpenAI는
+                    # index 0이 항상 먼저 들어오므로 기존 동작과 동일).
+                    buf = next(iter(tool_call_buffers.values()), {"arguments": "{}"})
                     try:
                         args = json.loads(buf["arguments"] or "{}")
                     except json.JSONDecodeError:
+                        logger.warning(
+                            "툴 인자 JSON 파싱 실패 (model=%s): %s",
+                            spec.model_id,
+                            buf["arguments"][:200],
+                        )
                         args = {}
                     query = args.get("query")
                     if query:
