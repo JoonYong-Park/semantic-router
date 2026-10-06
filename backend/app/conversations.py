@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -340,6 +340,7 @@ async def _build_history(
     conversation_id: UUID,
     new_query: str,
     new_attachments: list[Attachment] | None = None,
+    exclude_message_id: UUID | None = None,
 ) -> list[dict[str, str | list[dict]]]:
     """토큰 예산(MAX_CONTEXT_TOKENS) 안에서 최근 메시지부터 거꾸로 채우는
     슬라이딩 윈도우. 새 사용자 질문은 아직 DB에 없으므로 마지막에 직접 붙인다.
@@ -347,11 +348,12 @@ async def _build_history(
     과거 턴 중 첨부파일이 달려 있던 턴은 attachments 테이블을 조인해서
     멀티모달 content 배열로 재구성한다 (텍스트만 있던 턴은 그대로 문자열).
     """
-    result = await session.execute(
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at.desc())
-    )
+    query = select(Message).where(Message.conversation_id == conversation_id)
+    if exclude_message_id is not None:
+        # 이번 질문은 응답 생성 전에 이미 저장돼 있다 - 아래에서 new_query로 직접
+        # 붙이므로 조회에서는 빼야 같은 질문이 두 번 들어가지 않는다.
+        query = query.where(Message.id != exclude_message_id)
+    result = await session.execute(query.order_by(Message.created_at.desc()))
     history = result.scalars().all()
 
     selected: list[Message] = []
@@ -440,6 +442,60 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+class TurnStream:
+    """한 턴의 응답 생성 진행 상황. 응답 생성은 브라우저 연결과 분리된 백그라운드
+    태스크가 끝까지 수행하고(채팅 이동/새로고침으로 연결이 끊겨도 계속 생성·저장),
+    SSE는 여기 쌓인 이벤트를 처음부터 다시 받거나(재접속) 이어서 받기만 한다.
+    구독자가 끊겨도 DB 작업이 중간에 취소되지 않으므로, 취소 시점에 따라
+    트랜잭션이 열린 채 남아 잠금을 쥐던 문제도 생기지 않는다."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+        self.done = False
+        self.task: asyncio.Task | None = None
+        self._cond = asyncio.Condition()
+
+    async def emit(self, event: dict) -> None:
+        async with self._cond:
+            self.events.append(event)
+            self._cond.notify_all()
+
+    async def finish(self) -> None:
+        async with self._cond:
+            self.done = True
+            self._cond.notify_all()
+
+    async def subscribe(self):
+        sent = 0
+        while True:
+            async with self._cond:
+                while sent >= len(self.events) and not self.done:
+                    await self._cond.wait()
+                batch = self.events[sent:]
+                sent = len(self.events)
+                finished = self.done
+            for event in batch:
+                yield _sse(event)
+            if finished:
+                return
+
+
+# 진행 중인 턴 - 대화방당 하나. 단일 uvicorn 프로세스 메모리에만 있다(워커를
+# 여러 개로 늘리면 재접속이 다른 프로세스로 갈 수 있어 공유 저장소가 필요함).
+_active_turns: dict[UUID, TurnStream] = {}
+
+
+@router.get("/{conversation_id}/stream")
+async def resume_stream(conversation_id: UUID):
+    """다른 채팅에 갔다 오거나 새로고침한 화면이 진행 중인 응답에 다시 붙는다.
+    지금까지의 이벤트를 처음부터 다시 보내고 이어서 실시간으로 보낸다.
+    진행 중인 응답이 없으면 204(화면은 DB에 저장된 메시지를 그대로 보여주면 됨)."""
+    turn = _active_turns.get(conversation_id)
+    if turn is None or turn.done:
+        return Response(status_code=204)
+    return StreamingResponse(turn.subscribe(), media_type="text/event-stream")
+
+
 @router.post("/{conversation_id}/messages")
 async def send_message(conversation_id: UUID, body: MessageCreate):
     # 존재 확인은 스트림 시작 전에 끝내서, 없는 채팅방이면 평범한 404를 낸다
@@ -491,24 +547,64 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 _memory_topic_to_text(m) for m in project_memory_result.scalars().all()
             ]
 
-    async def event_stream():
-        # StreamingResponse의 제너레이터는 응답이 실제로 스트리밍되는 동안 실행되므로,
-        # FastAPI Depends로 주입된 세션(요청 처리 직후 정리됨)을 쓰면 그 사이 세션이
-        # 닫혀버릴 수 있다. 그래서 여기서 새 세션을 직접 연다.
+    # 사용자 질문은 응답 생성을 시작하기 전에 먼저 저장한다 - 예전엔 라우팅/이력
+    # 조립 뒤에 저장해서, 그 사이 사용자가 채팅을 옮기면 질문까지 사라졌다.
+    # 이번 턴에 참조된 첨부파일도 여기서 이 메시지에 연결한다(이 채팅방 소유이면서
+    # 아직 다른 메시지에 붙지 않은 사용자 업로드만 유효 - 이미 전송된 첨부나 모델이
+    # 만든 파일을 재사용하려는 요청은 조용히 무시).
+    user_message_id = uuid_module.uuid4()
+    async with SessionLocal() as save_session:
+        valid_attachment_ids: list[UUID] = []
+        if body.attachment_ids:
+            att_result = await save_session.execute(
+                select(Attachment.id).where(
+                    Attachment.id.in_(body.attachment_ids),
+                    Attachment.chat_id == conversation_id,
+                    Attachment.message_id.is_(None),
+                    Attachment.source == "upload",
+                )
+            )
+            valid_attachment_ids = list(att_result.scalars().all())
+        # token_count는 첨부 추출이 끝난 뒤 실제로 모델에 보낸 content 기준으로
+        # 다시 계산해 갱신한다(아래 run_turn) - 여기선 우선 텍스트 기준 값.
+        save_session.add(
+            Message(
+                id=user_message_id,
+                conversation_id=conversation_id,
+                role="user",
+                content=body.content,
+                token_count=count_tokens(body.content),
+            )
+        )
+        # Attachment<->Message 사이에는(다른 모델들과 마찬가지로) ORM
+        # relationship()을 일부러 안 걸어뒀기 때문에, SQLAlchemy의 flush
+        # 순서 결정 로직이 이 둘의 FK 의존관계를 모른다. relationship()
+        # 없이 순서를 보장하려면 메시지를 먼저 flush로 실제 INSERT시켜야
+        # 한다 - 안 그러면 첨부파일 UPDATE가 먼저 나가서 아직 존재하지
+        # 않는 message_id를 참조하다 FK 위반 에러가 난다.
+        await save_session.flush()
+        if valid_attachment_ids:
+            await save_session.execute(
+                Attachment.__table__.update()
+                .where(Attachment.id.in_(valid_attachment_ids))
+                .values(message_id=user_message_id)
+            )
+        await save_session.execute(
+            Conversation.__table__.update()
+            .where(Conversation.id == conversation_id)
+            .values(updated_at=datetime.now(timezone.utc))
+        )
+        await save_session.commit()
+
+    async def run_turn(turn: TurnStream):
+        # 브라우저 연결과 무관하게 끝까지 도는 백그라운드 태스크라 세션을 직접 연다.
         async with SessionLocal() as session:
-            # 이번 턴에 참조된 첨부파일 조회 - 이 채팅방 소유이면서 아직 다른
-            # 메시지에 붙지 않은(message_id IS NULL) 사용자 업로드만 유효하다고 본다
-            # (이미 전송된 첨부나 모델이 만든 파일을 재사용하려는 요청은 조용히 무시).
-            # 파일 의도 감지(첨부 형식 참고)가 라우팅보다 먼저 필요해서 맨 앞에서 조회한다.
+            # 이번 턴 첨부(위에서 질문에 연결함) - 파일 의도 감지(첨부 형식 참고)가
+            # 라우팅보다 먼저 필요해서 맨 앞에서 조회한다.
             new_attachments: list[Attachment] = []
-            if body.attachment_ids:
+            if valid_attachment_ids:
                 att_result = await session.execute(
-                    select(Attachment).where(
-                        Attachment.id.in_(body.attachment_ids),
-                        Attachment.chat_id == conversation_id,
-                        Attachment.message_id.is_(None),
-                        Attachment.source == "upload",
-                    )
+                    select(Attachment).where(Attachment.id.in_(valid_attachment_ids))
                 )
                 new_attachments = list(att_result.scalars().all())
 
@@ -564,7 +660,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                 spec = bumped
 
             # 2) meta 이벤트 - 스트리밍 시작 전에 먼저 보내서 프론트가 배지를 바로 그림
-            yield _sse(
+            await turn.emit(
                 {
                     "type": "meta",
                     "model": spec.display_name,
@@ -577,16 +673,15 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             # 바로 전송 버튼을 누를 수 있게 하기 위함), 여기서 실제 모델
             # 호출 전에 백그라운드 추출이 끝나길 기다린다.
             if any(a.extraction_status == "pending" for a in new_attachments):
-                yield _sse({"type": "processing", "message": "첨부파일 처리 중..."})
+                await turn.emit({"type": "processing", "message": "첨부파일 처리 중..."})
                 await _wait_for_attachment_processing(session, new_attachments)
 
-            # 3) 슬라이딩 윈도우로 이전 대화 이력 구성 - _build_history는 "이번
-            #    질문은 아직 DB에 없다"는 전제로 마지막에 new_query를 직접 붙이므로,
-            #    반드시 이번 사용자 메시지를 저장하기 *전에* 호출해야 한다
-            #    (순서가 바뀌면 방금 커밋된 메시지가 조회 결과에도 잡히고 new_query로도
-            #    또 붙어서, 모델에게 같은 사용자 메시지가 두 번 들어가는 버그가 생긴다).
+            # 3) 슬라이딩 윈도우로 이전 대화 이력 구성 - _build_history는 마지막에
+            #    new_query(이번 질문)를 직접 붙이므로, 이미 저장된 이번 질문은
+            #    exclude_message_id로 조회에서 뺀다(안 빼면 같은 질문이 두 번 들어감).
             history = await _build_history(
-                session, conversation_id, body.content, new_attachments
+                session, conversation_id, body.content, new_attachments,
+                exclude_message_id=user_message_id,
             )
 
             # 프로젝트 참고자료 삽입 - _build_history() 내부는 안 건드리고,
@@ -618,37 +713,15 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     history[0]["content"] = reference_blocks + first_content
                     reference_block_count = len(reference_blocks)
 
-            # 4) 사용자 메시지 저장 - id를 미리 만들어서 같은 트랜잭션에서
-            #    첨부파일의 message_id를 바로 연결한다 (전송 완료 표시).
-            user_message_id = uuid_module.uuid4()
-            # 슬라이딩 윈도우 예산에 첨부파일(텍스트+이미지/문서 근사치)도
-            # 반영되도록, 실제로 모델에 보낸 것과 같은 content(history의
-            # 마지막 항목 - _content_with_attachments 결과)를 그대로 재사용해
-            # 카운트한다. body.content(순수 텍스트)만 세면 큰 첨부가 달린
-            # 턴이 "거의 공짜"로 취급돼 윈도우에 과도하게 오래 남는 문제가 있었다.
-            user_tokens = estimate_content_tokens(history[-1]["content"])
-            session.add(
-                Message(
-                    id=user_message_id,
-                    conversation_id=conversation_id,
-                    role="user",
-                    content=body.content,
-                    token_count=user_tokens,
-                )
-            )
-            # Attachment<->Message 사이에는(다른 모델들과 마찬가지로) ORM
-            # relationship()을 일부러 안 걸어뒀기 때문에, SQLAlchemy의 flush
-            # 순서 결정 로직이 이 둘의 FK 의존관계를 모른다. relationship()
-            # 없이 순서를 보장하려면 메시지를 먼저 flush로 실제 INSERT시켜야
-            # 한다 - 안 그러면 첨부파일 UPDATE가 먼저 나가서 아직 존재하지
-            # 않는 message_id를 참조하다 FK 위반 에러가 난다.
-            await session.flush()
-            for att in new_attachments:
-                att.message_id = user_message_id
+            # 4) 질문의 token_count 갱신 - 슬라이딩 윈도우 예산에 첨부파일(텍스트+
+            #    이미지/문서 근사치)도 반영되도록, 실제로 모델에 보낸 것과 같은
+            #    content(history의 마지막 항목)로 다시 센다. body.content(순수
+            #    텍스트)만 세면 큰 첨부가 달린 턴이 "거의 공짜"로 취급돼 윈도우에
+            #    과도하게 오래 남는 문제가 있었다.
             await session.execute(
-                Conversation.__table__.update()
-                .where(Conversation.id == conversation_id)
-                .values(updated_at=datetime.now(timezone.utc))
+                Message.__table__.update()
+                .where(Message.id == user_message_id)
+                .values(token_count=estimate_content_tokens(history[-1]["content"]))
             )
             await session.commit()
 
@@ -746,7 +819,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                                 piece = "\n\n" + piece
                             round_text += event["content"]
                             full_response += piece
-                            yield _sse({"type": "chunk", "content": piece})
+                            await turn.emit({"type": "chunk", "content": piece})
                         elif event["type"] == "tool_call":
                             round_calls.append(event)
 
@@ -784,7 +857,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                         result: tools_module.ToolResult | None = None
                         async for kind, payload in tools_module.run_tool(call, tool_ctx_base):
                             if kind == "event":
-                                yield _sse(payload)
+                                await turn.emit(payload)
                             else:
                                 result = payload
                         if result.metadata.get("web_search_query") and not web_search_used:
@@ -813,7 +886,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
                     exc_info=True,
                 )
                 if not generated_ids:
-                    yield _sse({"type": "error", "message": f"모델 호출 실패: {exc}"})
+                    await turn.emit({"type": "error", "message": f"모델 호출 실패: {exc}"})
                     return
                 # 이번 턴에 이미 만든 파일이 있으면 카드가 사라지지 않게 에러 대신
                 # 지금까지의 텍스트(없으면 고정 문구)로 정상 마무리하고 저장/연결한다.
@@ -822,10 +895,7 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             if not full_response.strip():
                 fallback = FILES_ONLY_ANSWER if generated_ids else EMPTY_ANSWER
                 full_response = fallback
-                yield _sse({"type": "chunk", "content": fallback})
-
-            # 6) 완료 신호
-            yield _sse({"type": "done"})
+                await turn.emit({"type": "chunk", "content": fallback})
 
             # 7) 완성된 응답 저장 (중간 저장 없이 끝난 뒤 한 번에)
             # 토큰 사용량은 공급사가 응답에 실어 보내는 실제 값을 우선 쓰고,
@@ -874,8 +944,26 @@ async def send_message(conversation_id: UUID, body: MessageCreate):
             )
             await session.commit()
 
+            # 6) 완료 신호 - 답변이 DB에 저장된 뒤에 보낸다(화면이 done을 받고
+            #    목록/메시지를 다시 불러와도 방금 답변이 보이도록).
+            await turn.emit({"type": "done"})
+
         # 8) 첫 메시지면 제목 생성 - 백그라운드로 던지고 스트림은 바로 닫는다
         if is_first_message:
             asyncio.create_task(_generate_and_save_title(conversation_id, body.content))
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    async def drive(turn: TurnStream):
+        try:
+            await run_turn(turn)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("응답 생성 태스크 실패 (conversation_id=%s): %s", conversation_id, exc, exc_info=True)
+            await turn.emit({"type": "error", "message": f"응답 생성 실패: {exc}"})
+        finally:
+            await turn.finish()
+            if _active_turns.get(conversation_id) is turn:
+                del _active_turns[conversation_id]
+
+    turn = TurnStream()
+    _active_turns[conversation_id] = turn
+    turn.task = asyncio.create_task(drive(turn))
+    return StreamingResponse(turn.subscribe(), media_type="text/event-stream")

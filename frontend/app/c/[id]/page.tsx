@@ -20,6 +20,8 @@ import { useAppData } from "@/contexts/AppDataContext";
 import {
   deleteAttachment,
   getConversationMessages,
+  resumeStream,
+  StreamHandlers,
   streamMessage,
   uploadAttachment,
 } from "@/lib/api";
@@ -82,10 +84,9 @@ export default function ConversationPage() {
   // SSE 콜백이 이미 떠난 화면을 덮어쓰지 않도록 "지금 실제로 보여주고 있는
   // id"를 추적해서 어긋나면 업데이트를 무시한다.
   const displayedIdRef = useRef(conversationId);
-  // 지금 보고 있던 대화방에서 다른 대화방으로 넘어가면, 더 이상 아무도 안
-  // 보는 응답을 서버에 계속 만들게 둘 필요가 없어서 끊는다 - fetch 자체를
-  // 취소하는 거라 서버 쪽 작업도 더 빨리 정리된다(안 끊어도 메시지 자체는
-  // 끝까지 생성되어 DB에 저장되지만, 자원 낭비라 끊는 게 맞음).
+  // 지금 보고 있던 대화방에서 다른 대화방으로 넘어가면 이 화면의 구독(fetch)만
+  // 끊는다. 서버는 질문을 먼저 저장하고 응답을 백그라운드에서 끝까지 만들어
+  // 저장하므로, 돌아오면 loadMessages → resumeStream으로 다시 이어서 본다.
   const streamAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -126,9 +127,17 @@ export default function ConversationPage() {
     }
 
     setMessages([]);
-    getConversationMessages(conversationId)
+    loadMessages(conversationId, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
+
+  // DB에 저장된 메시지를 불러온다. 마지막 메시지가 답변 없는 질문이면, 서버가
+  // 아직 그 응답을 만들고 있을 수 있으니(채팅을 옮기거나 새로고침해도 서버는
+  // 계속 생성함) 진행 중인 응답에 다시 붙는다(tryResume).
+  function loadMessages(convId: string, tryResume: boolean) {
+    getConversationMessages(convId)
       .then((dbMessages) => {
-        if (displayedIdRef.current !== conversationId) return;
+        if (displayedIdRef.current !== convId) return;
         setMessages(
           dbMessages.map((m) => ({
             id: m.id,
@@ -141,14 +150,17 @@ export default function ConversationPage() {
             attachments: m.attachments,
           }))
         );
+        const last = dbMessages[dbMessages.length - 1];
+        if (tryResume && last?.role === "user") {
+          streamAssistantReply(convId, null);
+        }
       })
       .catch(() => {
         // 존재하지 않는 채팅방이거나(삭제됨/오타 URL) 일시적 오류 - 이 데모
         // 앱엔 별도 404 화면이 없으므로 기본 화면으로 되돌린다.
-        if (displayedIdRef.current === conversationId) setNotFound(true);
+        if (displayedIdRef.current === convId) setNotFound(true);
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId]);
+  }
 
   useEffect(() => {
     if (notFound) router.replace("/");
@@ -224,7 +236,8 @@ export default function ConversationPage() {
     }
   }
 
-  async function streamAssistantReply(convId: string, body: SendMessageBody) {
+  // body가 있으면 새 질문 전송, null이면 이미 저장된 질문의 진행 중인 응답에 재접속.
+  async function streamAssistantReply(convId: string, body: SendMessageBody | null) {
     const assistantId = nextId();
     setPhase("waiting-meta");
     setStreamingId(assistantId);
@@ -234,10 +247,7 @@ export default function ConversationPage() {
     const controller = new AbortController();
     streamAbortRef.current = controller;
 
-    await streamMessage(
-      convId,
-      body,
-      {
+    const handlers: StreamHandlers = {
         onMeta: (meta) => {
           if (!isCurrent()) return;
           setPhase("streaming");
@@ -324,9 +334,20 @@ export default function ConversationPage() {
             ];
           });
         },
-      },
-      controller.signal
-    );
+    };
+
+    if (body) {
+      await streamMessage(convId, body, handlers, controller.signal);
+      return;
+    }
+    const resumed = await resumeStream(convId, handlers, controller.signal);
+    if (!resumed && isCurrent()) {
+      // 진행 중인 응답이 없음 - 방금 끝났을 수 있으니 저장된 메시지를 한 번만
+      // 다시 불러온다(실패한 턴이면 질문만 남아 있는 게 실제 상태).
+      setPhase("idle");
+      setStreamingId(null);
+      loadMessages(convId, false);
+    }
   }
 
   async function handleSend() {

@@ -493,54 +493,23 @@ export async function searchConversations(query: string): Promise<SearchResult[]
   return res.json();
 }
 
+export interface StreamHandlers {
+  onMeta: (meta: { model: string; category: string | null; complexity: number | null }) => void;
+  onSearching: (query: string) => void;
+  onProcessing: (message: string) => void;
+  onFile: (attachment: AttachmentOut) => void;
+  onChunk: (content: string) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+}
+
 /**
- * SSE 스트리밍 전송. fetch의 ReadableStream을 직접 읽어서 파싱한다
- * (EventSource는 POST 바디를 못 보내서 못 씀).
- * 이벤트는 "\n\n"으로 구분되므로, 청크 경계에 걸쳐 잘린 이벤트는
- * buffer에 남겨뒀다가 다음 read()에서 이어붙인다.
+ * SSE 응답 본문을 읽어 이벤트별 핸들러를 부른다. fetch의 ReadableStream을
+ * 직접 읽는다(EventSource는 POST 바디를 못 보내서 못 씀). 이벤트는 "\n\n"으로
+ * 구분되므로, 청크 경계에 걸쳐 잘린 이벤트는 buffer에 남겼다가 이어붙인다.
  */
-export async function streamMessage(
-  conversationId: string,
-  body: SendMessageBody,
-  handlers: {
-    onMeta: (meta: { model: string; category: string | null; complexity: number | null }) => void;
-    onSearching: (query: string) => void;
-    onProcessing: (message: string) => void;
-    onFile: (attachment: AttachmentOut) => void;
-    onChunk: (content: string) => void;
-    onDone: () => void;
-    onError: (message: string) => void;
-  },
-  // 사용자가 스트리밍 도중 다른 채팅방으로 넘어가는 것 자체는 허용하되
-  // (더 이상 안 막음), 그 화면을 완전히 떠나거나 다른 채팅으로 바꿀 때
-  // 더는 아무도 안 보는 응답을 서버에 계속 만들게 두지 않도록 호출
-  // 쪽에서 끊을 수 있게 둔다.
-  signal?: AbortSignal
-): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch(`${API_URL}/conversations/${conversationId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") return;
-    handlers.onError("서버에 연결할 수 없습니다.");
-    return;
-  }
-
-  if (!res.ok || !res.body) {
-    const payload = await res.json().catch(() => null);
-    const detail = payload?.detail;
-    handlers.onError(
-      typeof detail === "string" ? detail : `요청 실패 (HTTP ${res.status})`
-    );
-    return;
-  }
-
-  const reader = res.body.getReader();
+async function readSseStream(body: ReadableStream<Uint8Array>, handlers: StreamHandlers): Promise<void> {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
@@ -550,8 +519,8 @@ export async function streamMessage(
     try {
       ({ done, value } = await reader.read());
     } catch (err) {
-      // 호출 쪽이 signal.abort()로 끊은 경우(다른 채팅으로 이동 등) - 아무도
-      // 더 안 보는 응답이니 에러로 취급하지 않고 조용히 중단한다.
+      // 호출 쪽이 signal.abort()로 끊은 경우(다른 채팅으로 이동 등) - 화면만
+      // 구독을 멈출 뿐 서버는 응답을 끝까지 만들어 저장하므로 에러로 취급하지 않는다.
       if (err instanceof DOMException && err.name === "AbortError") return;
       throw err;
     }
@@ -593,4 +562,60 @@ export async function streamMessage(
       }
     }
   }
+}
+
+/**
+ * 질문 전송 + 응답 스트리밍. 서버는 질문을 먼저 저장하고 응답을 백그라운드에서
+ * 끝까지 생성·저장하므로, signal로 끊으면(채팅 이동/새로고침) 이 화면의 구독만
+ * 멈추고 응답 자체는 계속 만들어진다 - 돌아오면 resumeStream으로 다시 붙는다.
+ */
+export async function streamMessage(
+  conversationId: string,
+  body: SendMessageBody,
+  handlers: StreamHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/conversations/${conversationId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return;
+    handlers.onError("서버에 연결할 수 없습니다.");
+    return;
+  }
+
+  if (!res.ok || !res.body) {
+    const payload = await res.json().catch(() => null);
+    const detail = payload?.detail;
+    handlers.onError(
+      typeof detail === "string" ? detail : `요청 실패 (HTTP ${res.status})`
+    );
+    return;
+  }
+  await readSseStream(res.body, handlers);
+}
+
+/**
+ * 이 대화방에서 아직 생성 중인 응답이 있으면 지금까지의 진행 상황부터 다시 받아
+ * 이어서 스트리밍한다. 진행 중인 응답이 없으면(서버 204) false.
+ */
+export async function resumeStream(
+  conversationId: string,
+  handlers: StreamHandlers,
+  signal?: AbortSignal
+): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/conversations/${conversationId}/stream`, { signal });
+  } catch {
+    return false;
+  }
+  if (res.status === 204 || !res.ok || !res.body) return false;
+  await readSseStream(res.body, handlers);
+  return true;
 }

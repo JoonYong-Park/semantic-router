@@ -79,18 +79,25 @@ The backend is a flat module layout. Each feature module owns an `APIRouter`, an
 
 **Chat request path:** `conversations.py` `send_message`
 1. Loads all context up front in its own session: personal instruction, imported memory, global memory, project instruction, project memory.
-2. Returns a `StreamingResponse` whose generator:
-   - selects a model;
-   - builds a token-budgeted sliding-window history (`_build_history`, `MAX_CONTEXT_TOKENS`);
-   - runs the **tool loop** (up to `MAX_TOOL_ROUNDS` = 5, or `EDIT_MAX_TOOL_ROUNDS` = 8 on edit-intent turns, since inspect → edit → answer plus a retry or a re-edit doesn't fit in 5):
-     - each round is one `providers.stream_model_with_tools()` call;
-     - text streams out immediately as `chunk`;
-     - if the model returned tool calls, every call is executed through `tools.run_tool()`, an assistant message (with `tool_calls`) and one `tool` message per call are appended to a working copy of the history, and the loop calls the model again;
-     - the loop ends on a round with no tool calls;
-     - the last round forces a final answer (`force_final`): OpenAI drops `tools`; Anthropic and Gemini keep `tools` and send `tool_choice` none;
-     - if the loop ends with empty text, a fixed message is streamed and saved instead ("파일을 생성했습니다." when files were made).
-3. Text from different rounds is joined with `"\n\n"`. Per-round token usage is summed. Tool failures (executor exceptions, unknown tool name, unparseable arguments) are sent back to the model as `is_error` results and the loop continues. A model-call exception sends an `error` SSE and saves nothing.
-4. **Tool calls and results are never stored in the DB.** Only the final assistant text is saved, so the next turn's history has no tool messages. `Message.web_search_used` / `web_search_query` are set from the web_search tool's `ToolResult.metadata`.
+2. **Saves the user message immediately** and links this turn's attachments, before any slow work. `token_count` is recomputed later from the real model content.
+3. **Generation is decoupled from the HTTP connection.**
+   - A background task (`run_turn`, started with `asyncio.create_task`) does all the work and pushes events into a `TurnStream`, registered in `_active_turns[conversation_id]`.
+   - The POST response only subscribes to it. If the browser disconnects (chat switch, new chat, refresh), only the subscriber stops; the task still finishes and saves the answer, and DB work is never cancelled mid-transaction. Cancelling it mid-transaction used to leak `idle in transaction` connections holding locks.
+   - `GET /conversations/{id}/stream` replays all events so far, then streams live (204 if nothing is running). The chat page calls it via `resumeStream` when the last loaded message is an unanswered user message.
+   - `done` is emitted only after the answer is saved.
+   - The registry lives in process memory, so this assumes a single uvicorn worker.
+   - The task body:
+     - selects a model;
+     - builds a token-budgeted sliding-window history (`_build_history`, `MAX_CONTEXT_TOKENS`);
+     - runs the **tool loop** (up to `MAX_TOOL_ROUNDS` = 5, or `EDIT_MAX_TOOL_ROUNDS` = 8 on edit-intent turns, since inspect → edit → answer plus a retry or a re-edit doesn't fit in 5):
+       - each round is one `providers.stream_model_with_tools()` call;
+       - text streams out immediately as `chunk`;
+       - if the model returned tool calls, every call is executed through `tools.run_tool()`, an assistant message (with `tool_calls`) and one `tool` message per call are appended to a working copy of the history, and the loop calls the model again;
+       - the loop ends on a round with no tool calls;
+       - the last round forces a final answer (`force_final`): OpenAI drops `tools`; Anthropic and Gemini keep `tools` and send `tool_choice` none;
+       - if the loop ends with empty text, a fixed message is streamed and saved instead ("파일을 생성했습니다." when files were made).
+4. Text from different rounds is joined with `"\n\n"`. Per-round token usage is summed. Tool failures (executor exceptions, unknown tool name, unparseable arguments) are sent back to the model as `is_error` results and the loop continues. A model-call exception sends an `error` event and saves no answer; the question is already saved.
+5. **Tool calls and results are never stored in the DB.** Only the final assistant text is saved, so the next turn's history has no tool messages. `Message.web_search_used` / `web_search_query` are set from the web_search tool's `ToolResult.metadata`.
 
 System-prompt context is injected in a fixed precedence order: personal instruction → imported memory → global memory → project instruction → project memory. Tool definitions are not in the system prompt; they go in the provider's top-level `tools` parameter.
 
