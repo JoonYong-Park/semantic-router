@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image
 from pypdf import PdfReader
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import extraction
@@ -41,6 +41,10 @@ UPLOAD_ROOT = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
 CHATS_ROOT = UPLOAD_ROOT / "chats"
 PROJECTS_ROOT = UPLOAD_ROOT / "projects"  # 프로젝트 참고자료 기능 - 아직 미사용, 폴더도 미리 안 만듦
 ORPHAN_MAX_AGE = timedelta(hours=24)
+# 모델이 만든 파일은 연결 중단 등으로 message_id를 못 받았어도 사용자가 이미
+# 다운로드 카드를 봤을 수 있어서 업로드 고아보다 넉넉하게 둔다.
+GENERATED_ORPHAN_MAX_AGE = timedelta(days=7)
+MAX_GENERATED_BYTES = 25 * 1024 * 1024  # 생성 파일당 상한 (업로드 상한과 동일)
 ORPHAN_SWEEP_INTERVAL_SECONDS = 60 * 60  # 1시간마다 스캔
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB - 데모 규모 기준 상한
@@ -355,6 +359,48 @@ async def cancel_attachment(
     await session.commit()
 
 
+async def save_generated_file(
+    chat_id: uuid.UUID,
+    display_name: str,
+    ext: str,
+    content: bytes,
+    generation_meta: dict,
+) -> Attachment:
+    """모델이 문서 툴로 만든 파일을 uploads/chats/{chat_id}/generated/ 아래에
+    UUID 파일명으로 저장하고 Attachment(source='generated', message_id=NULL)로
+    등록한다. message_id는 assistant 메시지가 저장될 때 툴 루프가 연결한다
+    (그 전에 연결이 끊기면 7일 뒤 고아 정리 대상). 채팅방 폴더 하위라 채팅방
+    삭제 시 delete_chat_upload_dir로 함께 지워진다."""
+    if len(content) > MAX_GENERATED_BYTES:
+        raise ValueError(
+            f"생성된 파일이 너무 큽니다 ({len(content) // (1024 * 1024)}MB, "
+            f"최대 {MAX_GENERATED_BYTES // (1024 * 1024)}MB)."
+        )
+    generated_dir = _chat_upload_dir(chat_id) / "generated"
+    file_uuid, stored_path = _save_uploaded_file(generated_dir, ext, content)
+    # 업로드 경로와 같은 규칙으로 UPLOAD_ROOT 밖을 가리키지 않는지 확인
+    _resolve_under_upload_root(stored_path)
+
+    attachment = Attachment(
+        id=file_uuid,
+        chat_id=chat_id,
+        message_id=None,
+        original_name=display_name,
+        stored_path=str(stored_path),
+        mime_type=MIME_BY_EXT.get(ext, "application/octet-stream"),
+        size_bytes=len(content),
+        extracted_text=None,
+        extraction_status="done",
+        source="generated",
+        generation_meta=json.dumps(generation_meta, ensure_ascii=False),
+    )
+    async with SessionLocal() as session:
+        session.add(attachment)
+        await session.commit()
+        await session.refresh(attachment)
+    return attachment
+
+
 def _delete_attachment_files(attachment: Attachment) -> None:
     """채팅 첨부 전용 얇은 래퍼 - 해당 chat_id의 루트 디렉터리를 채워서
     범용 _delete_stored_files에 위임한다."""
@@ -368,13 +414,23 @@ def _delete_attachment_files(attachment: Attachment) -> None:
 
 
 async def _sweep_orphan_attachments() -> None:
-    """message_id가 24시간 넘게 안 채워진(전송 안 하고 이탈한) 첨부를 정리."""
-    cutoff = datetime.now(timezone.utc) - ORPHAN_MAX_AGE
+    """message_id가 안 채워진 첨부를 정리 - 업로드는 24시간(전송 안 하고 이탈),
+    생성 파일은 7일(스트리밍 중 연결이 끊겨 assistant 메시지에 연결되지 못한 경우)."""
+    now = datetime.now(timezone.utc)
     async with SessionLocal() as session:
         result = await session.execute(
             select(Attachment).where(
                 Attachment.message_id.is_(None),
-                Attachment.created_at < cutoff,
+                or_(
+                    and_(
+                        Attachment.source != "generated",
+                        Attachment.created_at < now - ORPHAN_MAX_AGE,
+                    ),
+                    and_(
+                        Attachment.source == "generated",
+                        Attachment.created_at < now - GENERATED_ORPHAN_MAX_AGE,
+                    ),
+                ),
             )
         )
         orphans = list(result.scalars().all())

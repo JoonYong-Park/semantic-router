@@ -56,6 +56,7 @@ class AttachmentOut(BaseModel):
     mime_type: str
     size_bytes: int
     extraction_status: str
+    source: Literal["upload", "generated"] = "upload"
     created_at: datetime
 
 

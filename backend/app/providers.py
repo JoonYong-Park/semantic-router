@@ -35,36 +35,6 @@ REQUEST_TIMEOUT = httpx.Timeout(120.0)
 # 스트리밍은 청크 사이 대기 시간이 길어질 수 있어 read 타임아웃을 넉넉히 둔다.
 STREAM_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 
-WEB_SEARCH_TOOL_NAME = "web_search"
-WEB_SEARCH_DESCRIPTION = "최신 정보, 실시간 정보, 특정 사실 확인이 필요할 때 웹을 검색한다."
-
-# Tavily는 기본적으로 최신순 필터 없이 검색해서, "오늘 날씨"처럼 시의성 있는
-# 질문에도 몇 년 전 글이 섞여 들어온다 (실제로 "2026년 9월 17일" 같은 날짜를
-# 검색어에 넣었더니 날짜 숫자만 겹치는 옛날 글/무관한 글이 섞이는 걸 확인함).
-# time_range로 무조건 최근으로 제한하면 이번엔 일반 지식 검색(예: "파이썬 문법")
-# 결과가 씨가 마르므로, 검색이 필요한지와 마찬가지로 시간 범위도 모델이 질문
-# 성격을 보고 직접 판단해서 선택하게 한다.
-_WEB_SEARCH_PROPERTIES = {
-    "query": {"type": "string", "description": "검색할 질의어 (간결한 핵심 키워드로 작성하고, 날짜를 문자열로 그대로 넣지 말 것)"},
-    "time_range": {
-        "type": "string",
-        "enum": ["day", "week", "month", "year", "none"],
-        "description": (
-            "결과를 최신으로 좁힐 범위. 오늘/실시간/최근 이슈처럼 시의성이 "
-            "중요하면 day나 week, 그렇지 않은 일반 지식/사실 확인이면 none."
-        ),
-    },
-    "site_hint": {
-        "type": "string",
-        "enum": ["weather", "none"],
-        "description": (
-            "실시간 날씨/기온/강수확률/미세먼지 질문이면 'weather'로 지정한다 - "
-            "일반 뉴스/블로그가 아니라 신뢰할 수 있는 기상 사이트로 검색을 좁힌다. "
-            "그 외 질문은 'none'."
-        ),
-    },
-}
-
 # site_hint별로 검색을 좁힐 신뢰 도메인. 날씨는 일반 키워드 검색에서 태풍/정치
 # 뉴스나 확률 계산기 스팸 사이트가 섞여 들어오는 걸 실제로 확인해서 추가함.
 SITE_HINT_DOMAINS: dict[str, list[str]] = {
@@ -72,39 +42,33 @@ SITE_HINT_DOMAINS: dict[str, list[str]] = {
 }
 
 
-def build_tools_for_company(company: Company) -> list[dict]:
-    """회사별 tools 스키마로 변환. OpenAI/Google(OpenAI 호환)은 완전히 동일한
-    {"type":"function","function":{...}} 형태를 쓰고(Google의 OpenAI 호환
-    엔드포인트가 이 포맷을 그대로 지원함을 공식 문서로 확인함), Anthropic만
-    {"name","description","input_schema"}로 구조가 다르다(function 래퍼 없음)."""
+def build_tools_for_company(company: Company, tool_specs: list) -> list[dict]:
+    """tools.py의 ToolSpec 목록을 회사별 tools 스키마로 변환만 한다(순환
+    import를 피하려고 스펙은 호출부가 넘김). OpenAI/Google(OpenAI 호환)은
+    {"type":"function","function":{...}}, Anthropic은 function 래퍼 없이
+    {"name","description","input_schema"}. strict는 스펙에 켜져 있을 때 OpenAI와
+    Anthropic에만 싣는다 - Google 호환 엔드포인트의 strict 지원은 미검증이라 안 보냄."""
     if company == "anthropic":
-        return [
-            {
-                "name": WEB_SEARCH_TOOL_NAME,
-                "description": WEB_SEARCH_DESCRIPTION,
-                "input_schema": {
-                    "type": "object",
-                    "properties": _WEB_SEARCH_PROPERTIES,
-                    "required": ["query"],
-                },
-            }
-        ]
+        converted = []
+        for t in tool_specs:
+            if t.strict:
+                # strict는 모든 객체에 additionalProperties:false가 필요해서 그대로 보낸다.
+                tool = {"name": t.name, "description": t.description,
+                        "input_schema": t.parameters, "strict": True}
+            else:
+                # 예전 Anthropic 요청과 동일하게 additionalProperties는 빼고 보낸다.
+                schema = {k: v for k, v in t.parameters.items() if k != "additionalProperties"}
+                tool = {"name": t.name, "description": t.description, "input_schema": schema}
+            converted.append(tool)
+        return converted
 
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": WEB_SEARCH_TOOL_NAME,
-                "description": WEB_SEARCH_DESCRIPTION,
-                "parameters": {
-                    "type": "object",
-                    "properties": _WEB_SEARCH_PROPERTIES,
-                    "required": ["query"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-    ]
+    converted = []
+    for t in tool_specs:
+        function = {"name": t.name, "description": t.description, "parameters": t.parameters}
+        if t.strict and company == "openai":
+            function["strict"] = True
+        converted.append({"type": "function", "function": function})
+    return converted
 
 
 # --- 첨부파일 멀티모달 content 어댑터 ---
@@ -124,6 +88,10 @@ def _to_anthropic_content(content: str | list[dict]) -> str | list[dict]:
     for block in content:
         if block["type"] == "text":
             blocks.append({"type": "text", "text": block["text"]})
+        elif block["type"] not in ("image", "document"):
+            # 이미 Anthropic 포맷인 블록(tool_use/tool_result 등)은 그대로 통과 -
+            # source 래퍼를 씌우면 깨진다.
+            blocks.append(block)
         else:  # image / document - Anthropic 둘 다 source 래퍼가 동일한 모양
             blocks.append(
                 {
@@ -212,25 +180,117 @@ def _apply_anthropic_cache_control(
         content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
 
 
+# --- 중립 메시지 포맷 → 회사별 변환 ---
+#
+# conversations.py의 툴 루프는 회사와 무관한 아래 포맷으로 메시지를 쌓는다:
+#   {"role": "system"|"user", "content": str | list[블록]}
+#   {"role": "assistant", "content": str, "tool_calls": [  # tool_calls는 없을 수 있음
+#       {"id", "name", "arguments": dict, "provider_extra": dict}]}
+#   {"role": "tool", "tool_call_id", "name", "content": str, "is_error": bool}
+# 아래 함수들이 요청 직전에 회사별 스키마로 바꾼다.
+
+
+def _to_anthropic_chat_messages(messages: list[dict]) -> list[dict]:
+    """system을 뺀 중립 메시지를 Anthropic messages로 변환. 연속된 tool 결과는
+    user 메시지 하나에 tool_result 블록으로 모두 묶는다(호출마다 결과가 하나씩
+    있어야 하고, 같은 user 메시지에서 tool_result가 텍스트보다 앞에 와야 함)."""
+    converted: list[dict] = []
+    for m in messages:
+        role = m["role"]
+        if role == "system":
+            continue
+        if role == "tool":
+            block = {
+                "type": "tool_result",
+                "tool_use_id": m["tool_call_id"],
+                "content": m["content"],
+            }
+            if m.get("is_error"):
+                block["is_error"] = True
+            prev = converted[-1] if converted else None
+            if prev and prev["role"] == "user" and prev.get("_tool_results"):
+                prev["content"].append(block)
+            else:
+                converted.append({"role": "user", "content": [block], "_tool_results": True})
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            blocks: list[dict] = []
+            if m.get("content"):
+                blocks.append({"type": "text", "text": m["content"]})
+            for call in m["tool_calls"]:
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": call["id"],
+                        "name": call["name"],
+                        "input": call.get("arguments") or {},
+                    }
+                )
+            converted.append({"role": "assistant", "content": blocks})
+            continue
+        converted.append({"role": role, "content": _to_anthropic_content(m["content"])})
+    for msg in converted:
+        msg.pop("_tool_results", None)
+    return converted
+
+
 def _prepare_anthropic_messages(
-    messages: list[dict], reference_block_count: int | None = None
+    messages: list[dict],
+    reference_block_count: int | None = None,
+    history_len: int | None = None,
 ) -> tuple[list[str], list[dict]]:
-    """system 텍스트 분리 + content 변환 + 캐싱까지 한 번에 처리."""
+    """system 텍스트 분리 + content 변환 + 캐싱까지 한 번에 처리.
+
+    history_len: messages 중 앞에서부터 몇 개가 "이번 턴 툴 루프 전의 원래
+    히스토리"(이번 사용자 질문까지)인지. 캐시 브레이크포인트(직전 턴 끝)는
+    이 구간 안에서만 찍어야 한다 - 루프 메시지까지 포함해 [-2]를 잡으면
+    회차마다 위치가 바뀌어 캐시가 깨진다. None이면 전체가 히스토리."""
+    if history_len is None:
+        history_len = len(messages)
     system_texts = [m["content"] for m in messages if m["role"] == "system"]
-    chat_messages = [
-        {"role": m["role"], "content": _to_anthropic_content(m["content"])}
-        for m in messages
-        if m["role"] != "system"
-    ]
-    _apply_anthropic_cache_control(chat_messages, reference_block_count)
-    return system_texts, chat_messages
+    base = _to_anthropic_chat_messages(messages[:history_len])
+    _apply_anthropic_cache_control(base, reference_block_count)
+    loop_part = _to_anthropic_chat_messages(messages[history_len:])
+    return system_texts, base + loop_part
 
 
-def _prepare_openai_messages(messages: list[dict]) -> list[dict]:
-    return [
-        {"role": m["role"], "content": _to_openai_content(m["content"])}
-        for m in messages
-    ]
+def _prepare_openai_messages(messages: list[dict], company: Company) -> list[dict]:
+    """중립 메시지를 OpenAI Chat Completions 포맷으로 변환(Google 호환 엔드포인트
+    공용). Google은 툴 호출 응답에 실려 온 extra_content(thought_signature)를
+    assistant tool_calls의 해당 호출에 그대로 되돌려 보내야 한다 - 빼면
+    "Function call is missing a thought_signature" 400이 남(실측)."""
+    converted: list[dict] = []
+    for m in messages:
+        role = m["role"]
+        if role == "tool":
+            content = m["content"]
+            if m.get("is_error"):
+                content = f"[툴 실행 오류] {content}"
+            converted.append(
+                {"role": "tool", "tool_call_id": m["tool_call_id"], "content": content}
+            )
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            tool_calls = []
+            for call in m["tool_calls"]:
+                entry = {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": json.dumps(call.get("arguments") or {}, ensure_ascii=False),
+                    },
+                }
+                extra = (call.get("provider_extra") or {}).get("extra_content")
+                if company == "google" and extra:
+                    entry["extra_content"] = extra
+                tool_calls.append(entry)
+            converted.append(
+                {"role": "assistant", "content": m.get("content") or None, "tool_calls": tool_calls}
+            )
+            continue
+        converted.append({"role": role, "content": _to_openai_content(m["content"])})
+    return converted
 
 
 async def call_model(spec: ModelSpec, message: str) -> str:
@@ -276,49 +336,69 @@ async def call_model(spec: ModelSpec, message: str) -> str:
 
 async def stream_model_with_tools(
     spec: ModelSpec,
-    messages: list[dict[str, str]],
+    messages: list[dict],
+    tool_specs: list | None,
     usage: dict[str, int] | None = None,
     reference_block_count: int | None = None,
+    history_len: int | None = None,
+    max_output_tokens: int | None = None,
+    force_final: bool = False,
 ) -> AsyncIterator[dict]:
-    """웹 검색 tool을 실어서 1차 호출 - 라우팅된 spec 모델 자신이 검색이
-    필요한지 판단한다(ChatGPT/Claude가 실제로 쓰는 방식과 동일, 판단 전용
-    별도 모델은 안 씀). 예전엔 이 1차 호출이 비스트리밍이라 "검색 없이 바로
-    답하는" 가장 흔한 경우에도 완성된 텍스트를 한 덩어리로만 보여줬는데,
-    여기서는 tools를 실어도 stream=True로 받아서 그 경우에도 실제로
-    토큰 단위 스트리밍이 되게 한다.
+    """중립 포맷 messages로 1회 스트리밍 호출한다(툴 루프의 한 회차).
 
     yield하는 이벤트:
-      {"type": "text", "content": str}      - 직접 답변 텍스트 조각(실시간)
-      {"type": "tool_call", "query": str, "time_range": str|None, "site_hint": str|None}
-        - 검색이 필요하다고 판단한 경우(텍스트 조각 없이 한 번만 옴)
+      {"type": "text", "content": str} - 답변 텍스트 조각(실시간)
+      {"type": "tool_call", "id", "name", "arguments": dict|None,
+       "raw_arguments": str, "parse_error": bool, "truncated": bool, "provider_extra": dict}
+        - 응답이 끝난 뒤, 이번 응답의 툴 호출을 순서대로 전부 yield
+          (Anthropic은 stop_reason을 봐야 잘림 여부를 알 수 있어서 끝에 모아 보냄)
 
-    usage: stream_model()과 동일한 관례 - 넘기면 이 1차 호출 자체가 쓴
-    토큰을 이 dict에 채워 넣는다. 검색 경로면 호출자가 2차 stream_model()
-    호출의 토큰과 합산해야 이번 턴의 총 사용량이 된다.
+    tool_specs: tools.py의 ToolSpec 목록. None/빈 목록이면 tools 없이 호출한다.
+    force_final: 툴 루프의 마지막 회차 - 툴 호출 없이 최종 답변을 강제한다.
+      OpenAI는 tools를 아예 뺀다(실측으로 정상 확인). Anthropic/Google은 tools를
+      유지하고 tool_choice를 none으로 보낸다 - tools를 빼면 Gemini가 "툴을 더
+      부르고 싶은" 상태에서 빈 답변을 낸 것을 실측했고, Anthropic은 tool 블록이
+      있는 요청에서 tools를 빼는 게 안전한지 확인이 안 됨(둘 다 미검증).
+    병렬 툴 호출은 요청 파라미터로 끈다. 그래도 여러 개가 오면 전부 yield하고,
+    호출부가 모든 호출에 결과를 돌려줘야 한다(결과 없는 호출이 있으면 다음 요청이 400).
 
-    reference_block_count: 프로젝트 참고자료가 붙은 대화면, 첫 번째 메시지
-    맨 앞 몇 개 블록이 참고자료인지(Anthropic 캐싱 2번째 브레이크포인트용).
-    프로젝트 없는 일반 대화는 None - 기존 동작 그대로.
+    usage: 넘기면 이 회차 호출이 실제로 쓴 토큰을 채워 넣는다(회차별 합산은 호출부).
+    reference_block_count / history_len: Anthropic 캐싱 브레이크포인트 위치용
+    (_prepare_anthropic_messages 참고). 다른 회사는 무시.
+    max_output_tokens: 이 회차의 출력 토큰 상한. None이면 기존 동작 그대로 -
+    Anthropic은 max_tokens 필수라 MAX_OUTPUT_TOKENS(2048), OpenAI/Google은
+    상한을 안 보냄(지금까지도 안 보냈음). 문서 툴처럼 긴 인자가 필요한
+    회차에서 값을 넘겨 올리는 용도.
     """
     api_key = API_KEYS.get(spec.company, "")
     if not api_key:
         raise RuntimeError(f"{KEY_ENV_NAMES[spec.company]}가 설정되지 않았습니다.")
 
-    tools = build_tools_for_company(spec.company)
+    if force_final and spec.company == "openai":
+        tool_specs = None
+    tools_payload = build_tools_for_company(spec.company, tool_specs) if tool_specs else None
 
     async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         if spec.company == "anthropic":
+            # Anthropic Messages API는 messages 배열 안에 role="system"을 허용하지
+            # 않고, 최상위 system 파라미터로 따로 받는다.
             system_texts, chat_messages = _prepare_anthropic_messages(
-                messages, reference_block_count
+                messages, reference_block_count, history_len
             )
 
             payload: dict = {
                 "model": spec.model_id,
-                "max_tokens": MAX_OUTPUT_TOKENS,
+                "max_tokens": max_output_tokens or MAX_OUTPUT_TOKENS,
                 "messages": chat_messages,
-                "tools": tools,
                 "stream": True,
             }
+            if tools_payload:
+                payload["tools"] = tools_payload
+                payload["tool_choice"] = (
+                    {"type": "none"}
+                    if force_final
+                    else {"type": "auto", "disable_parallel_tool_use": True}
+                )
             if system_texts:
                 payload["system"] = "\n\n".join(system_texts)
 
@@ -339,9 +419,12 @@ async def stream_model_with_tools(
                     _raise_for_status_logged(resp_for_raise)
 
                 # tool_use 블록의 input은 partial_json 조각으로 쪼개져 오므로
-                # content_block_stop에서 한 번에 파싱할 수 있게 모아둔다.
-                current_block_type: str | None = None
+                # content_block_stop에서 블록별로 파싱해 모아두고, stop_reason까지
+                # 확인한 뒤(잘림 여부) 응답 끝에서 한꺼번에 yield한다.
+                current_block: dict | None = None
                 tool_json_buffer = ""
+                tool_calls: list[dict] = []
+                stop_reason: str | None = None
 
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
@@ -356,7 +439,7 @@ async def stream_model_with_tools(
                         if input_tokens is not None:
                             usage["input_tokens"] = input_tokens
                     elif event_type == "content_block_start":
-                        current_block_type = event.get("content_block", {}).get("type")
+                        current_block = event.get("content_block") or {}
                         tool_json_buffer = ""
                     elif event_type == "content_block_delta":
                         delta = event.get("delta", {})
@@ -365,50 +448,56 @@ async def stream_model_with_tools(
                         elif delta.get("type") == "input_json_delta":
                             tool_json_buffer += delta.get("partial_json", "")
                     elif event_type == "content_block_stop":
-                        if current_block_type == "tool_use":
-                            try:
-                                args = json.loads(tool_json_buffer or "{}")
-                            except json.JSONDecodeError:
-                                logger.warning(
-                                    "툴 인자 JSON 파싱 실패 (model=%s): %s",
-                                    spec.model_id,
-                                    tool_json_buffer[:200],
+                        if current_block and current_block.get("type") == "tool_use":
+                            tool_calls.append(
+                                _make_tool_call(
+                                    spec,
+                                    call_id=current_block.get("id", ""),
+                                    name=current_block.get("name", ""),
+                                    raw=tool_json_buffer,
                                 )
-                                args = {}
-                            query = args.get("query")
-                            if query:
-                                yield {
-                                    "type": "tool_call",
-                                    "query": query,
-                                    "time_range": _normalize_time_range(
-                                        args.get("time_range")
-                                    ),
-                                    "site_hint": _normalize_site_hint(
-                                        args.get("site_hint")
-                                    ),
-                                }
-                        current_block_type = None
-                    elif event_type == "message_delta" and usage is not None:
-                        output_tokens = event.get("usage", {}).get("output_tokens")
-                        if output_tokens is not None:
-                            usage["output_tokens"] = output_tokens
+                            )
+                        current_block = None
+                    elif event_type == "message_delta":
+                        stop_reason = event.get("delta", {}).get("stop_reason") or stop_reason
+                        if usage is not None:
+                            output_tokens = event.get("usage", {}).get("output_tokens")
+                            if output_tokens is not None:
+                                usage["output_tokens"] = output_tokens
+                    # 그 외 이벤트(ping, message_stop, 새로 생긴 타입 등)는 무시
+
+            if stop_reason == "max_tokens" and tool_calls:
+                # 출력 한도에 걸려 마지막 툴 인자가 잘렸을 수 있다 - 우연히 JSON이
+                # 닫혀 있어도 내용이 불완전할 수 있으니 실패로 취급한다.
+                tool_calls[-1]["parse_error"] = True
+                tool_calls[-1]["truncated"] = True
+                tool_calls[-1]["arguments"] = None
+            for call in tool_calls:
+                yield call
             return
 
-        # openai / google - 완전히 동일한 tools/tool_calls + SSE 포맷
+        # openai / google - 동일한 Chat Completions SSE 포맷
         url = OPENAI_URL if spec.company == "openai" else GOOGLE_URL
-        payload: dict = {
+        payload = {
             "model": spec.model_id,
-            "messages": _prepare_openai_messages(messages),
-            "tools": tools,
-            "tool_choice": "auto",
+            "messages": _prepare_openai_messages(messages, spec.company),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if spec.company == "openai":
-            # reasoning 모델은 Chat Completions에서 tools를 쓰려면 reasoning_effort를
-            # "none"으로 꺼야 한다 (실제로 400 에러를 받아 확인함 - 안 끄면
-            # "Function tools with reasoning_effort are not supported ..." 에러).
-            payload["reasoning_effort"] = "none"
+        if max_output_tokens is not None:
+            # OpenAI reasoning 모델은 max_tokens 대신 max_completion_tokens를 받는다.
+            key = "max_completion_tokens" if spec.company == "openai" else "max_tokens"
+            payload[key] = max_output_tokens
+        if tools_payload:
+            payload["tools"] = tools_payload
+            # force_final일 때 여기까지 오는 건 Google뿐(OpenAI는 위에서 tools를 뺌)
+            payload["tool_choice"] = "none" if force_final else "auto"
+            if spec.company == "openai":
+                payload["parallel_tool_calls"] = False
+                # reasoning 모델은 Chat Completions에서 tools를 쓰려면 reasoning_effort를
+                # "none"으로 꺼야 한다 (실제로 400 에러를 받아 확인함 - 안 끄면
+                # "Function tools with reasoning_effort are not supported ..." 에러).
+                payload["reasoning_effort"] = "none"
 
         async with client.stream(
             "POST",
@@ -428,7 +517,8 @@ async def stream_model_with_tools(
             # 없이 호출마다 id를 붙여 보낸다(실측) - index가 없으면 id로, id도
             # 없으면 등장 순서로 버퍼를 구분해서 병렬 호출 인자가 한 문자열로
             # 이어 붙지 않게 한다.
-            tool_call_buffers: dict[int | str, dict[str, str]] = {}
+            buffers: dict[int | str, dict] = {}
+            finish_reason: str | None = None
 
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):
@@ -455,56 +545,75 @@ async def stream_model_with_tools(
                 for tc in delta.get("tool_calls") or []:
                     key = tc.get("index")
                     if key is None:
-                        key = tc.get("id") or f"pos-{len(tool_call_buffers)}"
-                    buf = tool_call_buffers.setdefault(key, {"arguments": ""})
+                        key = tc.get("id") or f"pos-{len(buffers)}"
+                    buf = buffers.setdefault(
+                        key, {"id": "", "name": "", "arguments": "", "provider_extra": {}}
+                    )
+                    if tc.get("id"):
+                        buf["id"] = tc["id"]
                     fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        buf["name"] = fn["name"]
                     if fn.get("arguments"):
                         buf["arguments"] += fn["arguments"]
+                    # Gemini 3의 thought_signature - 다음 요청에 그대로 되돌려 보내야 함
+                    if tc.get("extra_content"):
+                        buf["provider_extra"]["extra_content"] = tc["extra_content"]
 
-                # OpenAI는 툴을 호출하면 finish_reason이 "tool_calls"로 오지만,
-                # Gemini(OpenAI 호환)는 툴을 호출해도 "stop"으로 온다(실측) -
-                # 그래서 Google은 "stop"이어도 버퍼에 툴 호출이 있으면 처리한다.
-                finish_reason = choice.get("finish_reason")
-                if finish_reason == "tool_calls" or (
-                    spec.company == "google"
-                    and finish_reason == "stop"
-                    and tool_call_buffers
-                ):
-                    # 지금 구조는 툴 호출 하나만 처리한다(첫 번째 호출 - OpenAI는
-                    # index 0이 항상 먼저 들어오므로 기존 동작과 동일).
-                    buf = next(iter(tool_call_buffers.values()), {"arguments": "{}"})
-                    try:
-                        args = json.loads(buf["arguments"] or "{}")
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "툴 인자 JSON 파싱 실패 (model=%s): %s",
-                            spec.model_id,
-                            buf["arguments"][:200],
-                        )
-                        args = {}
-                    query = args.get("query")
-                    if query:
-                        yield {
-                            "type": "tool_call",
-                            "query": query,
-                            "time_range": _normalize_time_range(args.get("time_range")),
-                            "site_hint": _normalize_site_hint(args.get("site_hint")),
-                        }
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+
+        # OpenAI는 툴을 호출하면 finish_reason이 "tool_calls"로 오지만, Gemini(OpenAI
+        # 호환)는 툴을 호출해도 "stop"으로 온다(실측) - 그래서 finish_reason과
+        # 상관없이 버퍼에 모인 호출을 전부 내보낸다. "length"(출력 한도)로 끝났으면
+        # 마지막 호출 인자가 잘렸을 수 있으니 실패로 표시한다.
+        calls = list(buffers.values())
+        for i, buf in enumerate(calls):
+            call = _make_tool_call(
+                spec,
+                call_id=buf["id"] or f"call_{i}",
+                name=buf["name"],
+                raw=buf["arguments"],
+                provider_extra=buf["provider_extra"],
+            )
+            if finish_reason == "length" and i == len(calls) - 1:
+                call["parse_error"] = True
+                call["truncated"] = True
+                call["arguments"] = None
+            yield call
 
 
-def _normalize_time_range(value: str | None) -> str | None:
-    """모델이 준 time_range 값을 Tavily가 받는 값으로 정리. "none"/빈 값/모델이
-    스키마 밖의 값을 줬을 때는 전부 제한 없음(None)으로 취급한다."""
-    if value in ("day", "week", "month", "year"):
-        return value
-    return None
-
-
-def _normalize_site_hint(value: str | None) -> str | None:
-    """site_hint도 time_range와 동일하게 스키마에 정의된 값만 인정한다."""
-    if value in SITE_HINT_DOMAINS:
-        return value
-    return None
+def _make_tool_call(
+    spec: ModelSpec,
+    call_id: str,
+    name: str,
+    raw: str,
+    provider_extra: dict | None = None,
+) -> dict:
+    """툴 호출 이벤트 하나를 만든다. 인자 JSON 파싱에 실패하면 arguments=None,
+    parse_error=True로 표시만 하고(툴 루프가 is_error 결과로 모델에 돌려줌)
+    경고 로그를 남긴다."""
+    arguments: dict | None
+    parse_error = False
+    try:
+        parsed = json.loads(raw or "{}")
+        arguments = parsed if isinstance(parsed, dict) else None
+        parse_error = arguments is None
+    except json.JSONDecodeError:
+        arguments = None
+        parse_error = True
+    if parse_error:
+        logger.warning("툴 인자 JSON 파싱 실패 (model=%s): %s", spec.model_id, (raw or "")[:200])
+    return {
+        "type": "tool_call",
+        "id": call_id,
+        "name": name,
+        "arguments": arguments,
+        "raw_arguments": raw or "",
+        "parse_error": parse_error,
+        "truncated": False,
+        "provider_extra": provider_extra or {},
+    }
 
 
 async def tavily_search(
@@ -513,8 +622,9 @@ async def tavily_search(
     time_range: str | None = None,
     site_hint: str | None = None,
 ) -> list[dict]:
-    """Tavily로 웹 검색. 키가 없거나 요청이 실패하면 로그만 남기고 빈 리스트를
-    반환한다 - 호출부가 검색 결과 없이 조용히 계속 진행할 수 있게 한다.
+    """Tavily로 웹 검색. 키가 없거나 요청이 실패하면 예외를 그대로 올린다 -
+    호출부(tools.py의 web_search)가 그 사실을 모델에 에러 결과로 돌려준다.
+    결과가 0건이면 빈 리스트(실패와 구분).
 
     time_range: "day"/"week"/"month"/"year"로 최신순 필터를 걸 수 있다. 기본
     검색은 최신순 필터가 없어서 "오늘 날씨"처럼 시의성 있는 질문에도 몇 년 전
@@ -529,8 +639,7 @@ async def tavily_search(
     """
     api_key = API_KEYS.get("tavily", "")
     if not api_key:
-        logger.error("TAVILY_API_KEY가 설정되지 않아 웹 검색을 건너뜁니다.")
-        return []
+        raise RuntimeError("TAVILY_API_KEY가 설정되지 않았습니다.")
 
     payload: dict = {"query": query, "max_results": max_results}
     if time_range:
@@ -540,143 +649,12 @@ async def tavily_search(
         payload["include_domains"] = domains
         payload["include_domains_mode"] = "filter"
 
-    try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.post(
-                TAVILY_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("results", [])
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Tavily 검색 실패 (query=%s): %s", query, exc)
-        return []
-
-
-async def stream_model(
-    spec: ModelSpec,
-    messages: list[dict[str, str]],
-    usage: dict[str, int] | None = None,
-    reference_block_count: int | None = None,
-) -> AsyncIterator[str]:
-    """대화 이력(messages)을 포함해 호출하고, 텍스트 조각을 스트리밍으로 yield한다.
-
-    /chat(call_model)과 달리 단일 message가 아니라 [{"role","content"}, ...]
-    전체 이력을 받는다 - 채팅방 컨텍스트 유지용으로 새로 추가한 함수이며,
-    기존 call_model/ /chat 엔드포인트는 그대로 둔다.
-
-    usage: 넘기면 각 공급사가 응답에 실어 보내는 실제 토큰 사용량
-    ({"input_tokens": N, "output_tokens": N})을 이 dict에 채워 넣는다
-    (스트리밍 도중 채워지므로 제너레이터가 끝난 뒤 호출자가 읽으면 됨).
-    응답에 값이 없으면 채우지 않으니, 호출자가 폴백을 준비해야 한다.
-
-    reference_block_count: call_model_with_tools와 동일 - 프로젝트 참고자료
-    블록 개수(Anthropic 캐싱 2번째 브레이크포인트용), 없으면 기존 동작 그대로.
-    """
-    api_key = API_KEYS.get(spec.company, "")
-    if not api_key:
-        raise RuntimeError(
-            f"{KEY_ENV_NAMES[spec.company]}가 설정되지 않았습니다."
-        )
-
-    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
-        if spec.company == "anthropic":
-            # Anthropic Messages API는 messages 배열 안에 role="system"을 허용하지
-            # 않고, 최상위 system 파라미터로 따로 받는다. 다른 두 회사는 system
-            # role을 messages에 그대로 둬도 되는 OpenAI 호환 방식이라 그쪽은 안 건드림.
-            system_texts, chat_messages = _prepare_anthropic_messages(
-                messages, reference_block_count
-            )
-
-            payload: dict = {
-                "model": spec.model_id,
-                "max_tokens": MAX_OUTPUT_TOKENS,
-                "messages": chat_messages,
-                "stream": True,
-            }
-            if system_texts:
-                payload["system"] = "\n\n".join(system_texts)
-
-            async with client.stream(
-                "POST",
-                ANTHROPIC_URL,
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                },
-                json=payload,
-            ) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    resp_for_raise = httpx.Response(
-                        resp.status_code, content=body, request=resp.request
-                    )
-                    _raise_for_status_logged(resp_for_raise)
-
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    event = json.loads(line[len("data: ") :])
-                    event_type = event.get("type")
-
-                    # message_start에 입력 토큰, message_delta에 (누적) 출력
-                    # 토큰이 실려 온다 - Anthropic이 실제로 청구하는 값 그대로.
-                    if event_type == "message_start" and usage is not None:
-                        input_tokens = event.get("message", {}).get("usage", {}).get(
-                            "input_tokens"
-                        )
-                        if input_tokens is not None:
-                            usage["input_tokens"] = input_tokens
-                    elif event_type == "message_delta" and usage is not None:
-                        output_tokens = event.get("usage", {}).get("output_tokens")
-                        if output_tokens is not None:
-                            usage["output_tokens"] = output_tokens
-                    elif (
-                        event_type == "content_block_delta"
-                        and event.get("delta", {}).get("type") == "text_delta"
-                    ):
-                        yield event["delta"]["text"]
-            return
-
-        # openai / google 은 동일한 Chat Completions SSE 형식.
-        # stream_options.include_usage를 켜면 마지막에 choices가 빈 배열이고
-        # usage만 채워진 청크가 하나 더 온다 (실제 청구 토큰 수).
-        url = OPENAI_URL if spec.company == "openai" else GOOGLE_URL
-        async with client.stream(
-            "POST",
-            url,
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        resp = await client.post(
+            TAVILY_URL,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": spec.model_id,
-                "messages": _prepare_openai_messages(messages),
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            },
-        ) as resp:
-            if resp.status_code >= 400:
-                body = await resp.aread()
-                resp_for_raise = httpx.Response(
-                    resp.status_code, content=body, request=resp.request
-                )
-                _raise_for_status_logged(resp_for_raise)
-
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                payload = line[len("data: ") :]
-                if payload == "[DONE]":
-                    break
-                chunk = json.loads(payload)
-
-                if usage is not None and chunk.get("usage"):
-                    usage["input_tokens"] = chunk["usage"].get("prompt_tokens")
-                    usage["output_tokens"] = chunk["usage"].get("completion_tokens")
-
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                content = choices[0].get("delta", {}).get("content")
-                if content:
-                    yield content
+            json=payload,
+        )
+        _raise_for_status_logged(resp)
+        data = resp.json()
+        return data.get("results", [])

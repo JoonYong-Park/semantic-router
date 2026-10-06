@@ -266,6 +266,22 @@ export default function ConversationPage() {
             prev.map((m) => (m.id === assistantId ? { ...m, processingMessage: message } : m))
           );
         },
+        onFile: (attachment) => {
+          if (!isCurrent()) return;
+          // 생성된 파일 카드를 바로 붙이고, "문서 생성 중..." 표시는 여기서 끈다
+          // (파일 뒤에 텍스트 chunk가 안 올 수도 있어서 chunk에서만 지우면 남음).
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    attachments: [...(m.attachments ?? []), attachment],
+                    processingMessage: null,
+                  }
+                : m
+            )
+          );
+        },
         onChunk: (chunk) => {
           if (!isCurrent()) return;
           setMessages((prev) =>
@@ -334,6 +350,7 @@ export default function ConversationPage() {
         mime_type: a.file.type || "application/octet-stream",
         size_bytes: a.file.size,
         extraction_status: "done",
+        source: "upload",
         created_at: new Date().toISOString(),
       })),
     };
@@ -391,6 +408,7 @@ export default function ConversationPage() {
                   {showDivider && <DateDivider iso={m.createdAt} />}
                   <ChatBubble
                     message={m}
+                    conversationId={conversationId}
                     isStreaming={m.id === streamingId}
                     onAttachmentClick={(attachmentId) => {
                       const found = m.attachments?.find((a) => a.id === attachmentId);
