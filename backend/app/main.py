@@ -6,22 +6,22 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import classifier, complexity
-from app.attachments import orphan_cleanup_loop
-from app.attachments import router as attachments_router
-from app.conversations import router as conversations_router
-from app.db import init_db
-from app.memory import router as memory_router
-from app.memory import scheduled_extraction_loop
-from app.models_config import DEFAULT_MANUAL_SIZE, get_model
-from app.projects import router as projects_router
-from app.providers import call_model
-from app.router import select_model
+from app.routing import classifier, complexity
+from app.attachments.service import orphan_cleanup_loop
+from app.attachments.router import router as attachments_router
+from app.chat.router import router as conversations_router
+from app.core.db import init_db
+from app.memory.router import router as memory_router
+from app.memory.extract import scheduled_extraction_loop
+from app.routing.catalog import DEFAULT_MANUAL_SIZE, get_model
+from app.projects.router import router as projects_router
+from app.llm.client import call_model
+from app.routing.selector import select_model
 from app.schemas import ChatRequest, ChatResponse
-from app.search import router as search_router
-from app.settings import router as settings_router
-from app.usage import router as usage_router
-from app.users import router as users_router
+from app.chat.search import router as search_router
+from app.settings.router import router as settings_router
+from app.usage.router import router as usage_router
+from app.users.router import router as users_router
 
 logger = logging.getLogger("uvicorn.error")
 

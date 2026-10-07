@@ -21,7 +21,7 @@ browser(:3000)  →  frontend (Next.js)
 | Google | gemini-3.5-flash-lite | gemini-3.6-flash | gemini-3.1-pro-preview |
 | Anthropic | claude-haiku-4-5-20251001 | claude-sonnet-5 | claude-opus-5 |
 
-Model IDs and routing maps live in [backend/app/models_config.py](backend/app/models_config.py).
+Model IDs and routing maps live in [backend/app/routing/catalog.py](backend/app/routing/catalog.py).
 
 ## Features
 
@@ -60,7 +60,7 @@ Six mechanisms decide what the model "remembers" and where that carries over to:
 | Project memory | Chats inside one project | Automatic | Same auto-extraction as above, but scoped to that project's chats only and kept separate from global memory | Memory formation |
 | Project instructions | Chats inside one project | Manual | Set an instruction on a project folder; applied only to chat rooms assigned to that project, on top of the global instruction | System prompt injection |
 
-When two or more of these disagree on the same fact, they're applied in order: personal instructions → imported memory → auto-extracted (global) memory → project instructions → project memory (see [conversations.py](backend/app/conversations.py)). Both the global memory and every project's memory can be reviewed and individual facts deleted from the memory settings view.
+When two or more of these disagree on the same fact, they're applied in order: personal instructions → imported memory → auto-extracted (global) memory → project instructions → project memory (see [chat/router.py](backend/app/chat/router.py)). Both the global memory and every project's memory can be reviewed and individual facts deleted from the memory settings view.
 
 ## Attachments
 

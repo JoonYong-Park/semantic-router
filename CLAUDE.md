@@ -17,7 +17,7 @@ docker compose -f docker-compose.dev.yml up -d --build backend    # backend only
 docker compose -f docker-compose.dev.yml logs -f backend
 
 # Quick backend syntax check before rebuilding
-python3 -m py_compile backend/app/<file>.py
+python3 -m py_compile backend/app/<package>/<file>.py
 
 # Frontend typecheck = the `next build` step inside the frontend image build
 docker compose -f docker-compose.dev.yml up -d --build frontend
@@ -34,7 +34,7 @@ Deploys run on every push to `main`: a GitHub Actions self-hosted runner execute
 
 ## Schema changes: there are no migrations
 
-`init_db()` (backend/app/db.py) runs `Base.metadata.create_all()` at startup. It creates missing tables but **never alters existing ones**. Any column change to an existing table needs a manual `ALTER TABLE` (or a DROP and recreate), run against the local DB **and** the deployed server's DB. Forgetting the server side causes `UndefinedColumnError` after deploy. When you change `db_models.py`, give the user the exact SQL to run on the server. Write it to be idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
+`init_db()` (backend/app/core/db.py) runs `Base.metadata.create_all()` at startup. It creates missing tables but **never alters existing ones**. Any column change to an existing table needs a manual `ALTER TABLE` (or a DROP and recreate), run against the local DB **and** the deployed server's DB. Forgetting the server side causes `UndefinedColumnError` after deploy. When you change `db_models.py`, give the user the exact SQL to run on the server. Write it to be idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
 
 The `attachments` columns `source`, `source_attachment_id`, and `generation_meta` (and the `ix_attachments_message_source` index) were added for generated files. A server that predates them needs:
 
@@ -92,13 +92,13 @@ The photo itself is one re-encoded 256x256 PNG at `uploads/users/{id}/avatar.png
 
 ## Feature boundaries: don't let one feature's fix break another
 
-There is no test suite, so a cross-feature regression only surfaces when a real user hits it after deploy. The app looks like separate features (routing, memory, attachments, projects, streaming), but the backend is a flat module layout and several of them run through the **same shared code**. Before finishing any change, explicitly check whether it touches something another feature also depends on.
+There is no test suite, so a cross-feature regression only surfaces when a real user hits it after deploy. The app looks like separate features (routing, memory, attachments, projects, streaming), but several of them run through the **same shared code**. Before finishing any change, explicitly check whether it touches something another feature also depends on.
 
 Known shared/coupled points:
-- **`conversations.py` `send_message` is the single hot path for every feature.** Routing, memory injection, attachment loading, and SSE streaming all converge here. A change scoped to one concern (e.g. "fix memory injection") still runs through shared helpers (e.g. `_build_history`) on *every* message, so it can silently affect routing or streaming too.
+- **`chat/router.py` `send_message` is the single hot path for every feature.** Routing, memory injection, attachment loading, and SSE streaming all converge here. A change scoped to one concern (e.g. "fix memory injection") still runs through shared helpers (e.g. `_build_history`) on *every* message, so it can silently affect routing or streaming too.
 - **Normal chat and project chat share the same pipeline.** `/c/[id]` and `/projects/[id]` both go through `send_message`, `_build_history`, and the same SSE contract. A fix verified only in a normal chat must also be re-checked in a project chat, and vice versa.
-- **Memory schema is read in two separate places**: `memory.py` (extraction/recompute) and `conversations.py` (system-prompt injection). Changing `UserMemory`/`ProjectMemory` shape and updating only one of them leaves the other silently reading stale or malformed data.
-- **The SSE contract (`StreamEvent`) is hand-duplicated** between the backend (`conversations.py`) and the frontend (`frontend/lib/types.ts`). Adding, renaming, or removing an event `type` or field on one side without the other breaks the frontend with no compiler error, because the two live in different languages/processes.
+- **Memory schema is read in two separate places**: `memory/extract.py` (extraction/recompute) and `chat/router.py` + `chat/context.py` (system-prompt injection). Changing `UserMemory`/`ProjectMemory` shape and updating only one of them leaves the other silently reading stale or malformed data.
+- **The SSE contract (`StreamEvent`) is hand-duplicated** between the backend (`chat/router.py`) and the frontend (`frontend/lib/types.ts`). Adding, renaming, or removing an event `type` or field on one side without the other breaks the frontend with no compiler error, because the two live in different languages/processes.
 - **`frontend/lib/types.ts` mirrors `backend/app/schemas.py` by hand** for every endpoint, not just SSE — same silent-break risk for any Pydantic schema change.
 - **No `relationship()`, no migrations.** Every join is a manual `select()`, so a schema change can require updating every hand-written join site, not just the model. And every column change needs a manual `ALTER TABLE` on both local and server DB (see "Schema changes" above) — a fix that works locally against a fresh `create_all()` can still crash production.
 - **`SettingsWindow.tsx` is one tabbed modal** (personal instruction / import / usage / memory / appearance) sharing one piece of modal state. A change to one tab's logic must not alter the open/close or tab-switch behavior of the others.
@@ -106,23 +106,48 @@ Known shared/coupled points:
 Before marking any task done:
 1. **Find every other caller/reader** of whatever you changed (`_build_history`, `select_model`, the memory read/write functions, `StreamEvent`, a Pydantic schema, a DB column, etc.) — grep for it, don't assume it's only used by the feature you're focused on.
 2. **Rebuild and smoke-test beyond the one feature you touched.** At minimum: send one normal chat message and one project chat message end-to-end, and confirm existing memory/attachment behavior still works if your change is anywhere near the chat send path.
-3. **If a schema or the SSE contract changed, confirm both sides were updated together** — backend schema ↔ `frontend/lib/types.ts`, or `db_models.py` ↔ the server's `ALTER TABLE` — never just one.
+3. **If a schema or the SSE contract changed, confirm both sides were updated together** — backend schema ↔ `frontend/lib/types.ts`, or `core/models.py` ↔ the server's `ALTER TABLE` — never just one.
 4. If you're not sure whether something is shared, say so explicitly instead of assuming isolation — flat module layout with no tests means "it's probably fine" is exactly how regressions ship here.
 
 ## Backend architecture (backend/app/)
 
-The backend is a flat module layout. Each feature module owns an `APIRouter`, and `main.py` mounts them all. The `lifespan` in `main.py` starts three background tasks:
-- HF model loading. Manual mode works before the models finish loading; `auto` mode returns 503 until they are ready.
-- `attachments.orphan_cleanup_loop`.
-- `memory.scheduled_extraction_loop`, which runs at 07:00 and 12:30 KST.
+The backend is organized by domain. Each HTTP feature is a package with a `router.py` that owns its `APIRouter`, and `main.py` mounts them all. Engine packages have no HTTP.
 
-**Routing engine** (independent of HTTP):
+```
+app/
+├── main.py         app, router mounts, lifespan, legacy /chat
+├── schemas.py      all Pydantic schemas (one file until login work)
+├── core/           db.py (engine, session, init_db) · models.py (all tables) · tokens.py
+├── routing/        classifier.py · complexity.py · complexity_examples.py · catalog.py (9 models)
+│                   selector.py (select_model, bump_size) · intent.py (needs_*_tools keyword detectors)
+├── llm/            client.py (call_model, stream_model_with_tools) · messages.py (vendor converters)
+│                   tool_format.py · images.py · http.py (API keys, logged raise)
+├── websearch/      providers.py (Tavily → Perplexity → Brave, search_web)
+├── documents/      generator.py (create) · editor.py (inspect/edit) · extractor.py (text/image extraction)
+├── tools/          base.py (ToolSpec/Context/Result, schema helpers) · registry.py (get_tool_specs, run_tool)
+│                   web_search.py · documents.py · image.py · edit.py
+├── chat/           router.py (CRUD, send_message + run_turn, resume_stream) · history.py (_build_history)
+│                   context.py (memory text, DOC_TOOLS_GUIDE) · stream.py (TurnStream) · title.py · search.py (chat search)
+├── attachments/    router.py (endpoints) · service.py (storage, preview, generated files, orphan sweep; also used by projects/tools/chat)
+├── memory/         extract.py (extraction, scheduler, lock) · router.py (/memory/extract-all)
+└── projects/ · users/ · settings/ · usage/    router.py each
+```
+
+Dependency direction: `chat` → `tools` → `documents` / `websearch` / `llm`; `chat` → `routing`, `llm`, `memory`; everything → `core`. `llm` must not import `tools` or `chat` (specs are passed in). `tools/*` import `attachments.service` and `documents` lazily inside executors to avoid import cycles; keep it that way.
+
+The `lifespan` in `main.py` starts three background tasks:
+- HF model loading. Manual mode works before the models finish loading; `auto` mode returns 503 until they are ready.
+- `attachments.service.orphan_cleanup_loop`.
+- `memory.extract.scheduled_extraction_loop`, which runs at 07:00 and 12:30 KST.
+
+**Routing engine** (`routing/`, independent of HTTP):
 - `classifier.py`: category classification.
 - `complexity.py` and `complexity_examples.py`: complexity score.
-- `router.py`: `select_model()`, which combines the two. Note that this is *not* a FastAPI router.
-- `models_config.py`: the 9-model catalog.
+- `selector.py`: `select_model()`, which combines the two, and `bump_size()`.
+- `intent.py`: keyword intent detectors that decide which tool groups are sent.
+- `catalog.py`: the 9-model catalog.
 
-**Chat request path:** `conversations.py` `send_message`
+**Chat request path:** `chat/router.py` `send_message`
 1. Loads all context up front in its own session: personal instruction, imported memory, global memory, project instruction, project memory.
 2. **Saves the user message immediately** and links this turn's attachments, before any slow work. `token_count` is recomputed later from the real model content.
 3. **Generation is decoupled from the HTTP connection.**
@@ -135,9 +160,9 @@ The backend is a flat module layout. Each feature module owns an `APIRouter`, an
      - selects a model;
      - builds a token-budgeted sliding-window history (`_build_history`, `MAX_CONTEXT_TOKENS`);
      - runs the **tool loop** (up to `MAX_TOOL_ROUNDS` = 5, or `EDIT_MAX_TOOL_ROUNDS` = 8 on edit-intent turns, since inspect → edit → answer plus a retry or a re-edit doesn't fit in 5):
-       - each round is one `providers.stream_model_with_tools()` call;
+       - each round is one `llm.client.stream_model_with_tools()` call;
        - text streams out immediately as `chunk`;
-       - if the model returned tool calls, every call is executed through `tools.run_tool()`, an assistant message (with `tool_calls`) and one `tool` message per call are appended to a working copy of the history, and the loop calls the model again;
+       - if the model returned tool calls, every call is executed through `tools.registry.run_tool()`, an assistant message (with `tool_calls`) and one `tool` message per call are appended to a working copy of the history, and the loop calls the model again;
        - the loop ends on a round with no tool calls;
        - the last round forces a final answer (`force_final`): OpenAI drops `tools`; Anthropic and Gemini keep `tools` and send `tool_choice` none;
        - if the loop ends with empty text, a fixed message is streamed and saved instead ("파일을 생성했습니다." when files were made).
@@ -153,7 +178,7 @@ System-prompt context is injected in a fixed precedence order: personal instruct
   - the handler in `app/c/[id]/page.tsx`.
 - `onFile` also clears `processingMessage`.
 
-**tools.py** is the tool registry. A tool is a `ToolSpec`:
+**tools/** is the tool layer. A tool is a `ToolSpec` (`tools/base.py`):
 - `name`, `description`, `parameters` (JSON Schema), `strict` (on for every tool except `web_search`);
 - `executor(arguments, ctx) -> ToolResult`.
 
@@ -163,15 +188,15 @@ System-prompt context is injected in a fixed precedence order: personal instruct
 - `events`, SSE events sent after the tool finishes;
 - `metadata`, values for the loop that the model never sees.
 
-Registered tools: `web_search` (always sent; Tavily → Perplexity → Brave fallback, see below), three document tools, `generate_image`, and `inspect_document` / `edit_document`. Search failure and zero results are both reported to the model. `get_tool_specs(include_doc_tools, include_image_tools, include_edit_tools)` decides what is sent each turn; each group has its own intent detector in `router.py`. `ToolContext.turn_state` is shared by all calls in one turn (generated-file count, image count). `run_tool` logs every `is_error` result (`툴 에러 결과`, first 200 chars), and the loop logs tool names per round (`툴 호출`), so model paraphrases of errors can be traced.
+Registered tools: `web_search` (always sent; Tavily → Perplexity → Brave fallback, see below), three document tools, `generate_image`, and `inspect_document` / `edit_document`. Search failure and zero results are both reported to the model. `get_tool_specs(include_doc_tools, include_image_tools, include_edit_tools)` decides what is sent each turn; each group has its own intent detector in `routing/intent.py`. `ToolContext.turn_state` is shared by all calls in one turn (generated-file count, image count). `run_tool` logs every `is_error` result (`툴 에러 결과`, first 200 chars), and the loop logs tool names per round (`툴 호출`), so model paraphrases of errors can be traced.
 
 To add a tool:
 1. Write an async executor that returns a `ToolResult`. Use `ctx.emit` for progress; don't raise for expected failures, return `is_error=True` instead.
-2. Create a `ToolSpec` for it and add it to `_REGISTRY` in `tools.py`.
+2. Create a `ToolSpec` for it and add it to `_REGISTRY` in `tools/registry.py`.
 3. If it needs a new SSE event type, update `frontend/lib/types.ts` and the `lib/api.ts` parser in the same change.
 4. Smoke-test it on all three providers, in a normal chat and in a project chat.
 
-**Web search fallback** (`providers.search_web`, used by the `web_search` tool):
+**Web search fallback** (`websearch/providers.py` `search_web`, used by the `web_search` tool):
 - **Order:** Tavily → Perplexity → Brave. A provider is tried next only when the previous one raises (HTTP error, timeout, network error). A provider whose API key is missing is skipped.
 - **Zero results is not an error.** It does not trigger a fallback and is reported to the model as 0 results.
 - **Timeout:** each provider gets its own short timeout, `SEARCH_TIMEOUT` (15s, connect 5s), so a hung provider costs at most that long.
@@ -181,7 +206,7 @@ To add a tool:
 - **Logs:** a fallback logs `웹 검색 실패, 다음 제공자로 폴백` and `웹 검색 폴백 성공 (provider=...)`; normal searches log `웹 검색 (provider=...)`.
 - **Keys:** `TAVILY_API_KEY`, `PERPLEXITY_API_KEY`, `BRAVE_API_KEY` in `.env` (see `.env.example`). The server's `.env` needs them too, and the backend container must be recreated to pick them up.
 
-**Document tools** (`create_document` / `create_spreadsheet` / `create_presentation` in `tools.py`, renderers in `docgen.py`):
+**Document tools** (`create_document` / `create_spreadsheet` / `create_presentation` in `tools/documents.py`, renderers in `documents/generator.py`):
 - **Formats:**
   - `create_document`: docx, pdf, md, txt;
   - `create_spreadsheet`: xlsx, csv;
@@ -194,23 +219,23 @@ To add a tool:
 - **Executor flow** (`_render_and_save`):
   1. Enforce the per-turn limit (5 files).
   2. Emit `processing`.
-  3. Run `docgen.render_*` in `asyncio.to_thread`.
-  4. Save with `attachments.save_generated_file`.
+  3. Run `generator.render_*` in `asyncio.to_thread`.
+  4. Save with `attachments.service.save_generated_file`.
   5. Emit `file`.
   6. Return a JSON `ToolResult` whose `note` tells the model not to repeat the content.
-- **Errors:** `docgen.DocValidationError` messages name the exact field (e.g. `slides[3]...`) so the model can fix its arguments and retry. Recoverable issues (row-length mismatch, slide budget overruns) render anyway and are listed in `warnings`.
+- **Errors:** `generator.DocValidationError` messages name the exact field (e.g. `slides[3]...`) so the model can fix its arguments and retry. Recoverable issues (row-length mismatch, slide budget overruns) render anyway and are listed in `warnings`.
 - **Spreadsheet values:** every cell arrives as a string and is converted by column type. Text cells are forced to string type so `=`, `+`, `-`, `@` never become formulas; in csv those cells are prefixed with `'`.
 - **Fonts:**
   - docx/xlsx/pptx use "맑은 고딕". docx also sets `eastAsia` and strips theme fonts from the styles. pptx also sets `a:ea`.
   - pdf is a docx built with "Noto Sans CJK KR", converted through the shared LibreOffice path (one conversion at a time, shared with previews and extraction), because the server has no 맑은 고딕.
   - pptx colors, sizes, and margins live in `PPT_THEME`.
 - **To add a format:**
-  1. Add a branch in the matching `render_*` and its `ext` to `MIME_BY_EXT` in `attachments.py`.
+  1. Add a branch in the matching `render_*` and its `ext` to `MIME_BY_EXT` in `attachments/service.py`.
   2. Extend the tool's `format` enum and description.
   3. Check that the frontend card icon (`AttachmentTypeIcon`) handles the extension.
 
-**Image tool** (`generate_image` in `tools.py`, API call `providers.generate_image`):
-- **API:** OpenAI Images API (`/v1/images/generations`, `b64_json`). The model is the `IMAGE_MODEL` constant in `tools.py` (`gpt-image-2.5-flare`).
+**Image tool** (`generate_image` in `tools/image.py`, API call `llm/images.py` `generate_image`):
+- **API:** OpenAI Images API (`/v1/images/generations`, `b64_json`). The model is the `IMAGE_MODEL` constant in `tools/image.py` (`gpt-image-2.5-flare`).
 - **Arguments:**
   - `aspect_ratio` square / landscape / portrait → 1024x1024 / 1536x1024 / 1024x1536;
   - `quality` standard / high → medium / high;
@@ -223,10 +248,10 @@ To add a tool:
 - **What is recorded:**
   - `generation_meta` stores kind, model, size, quality, and format, never the prompt;
   - usage is not added to the token quota ring; only model/size/quality/elapsed time are logged.
-- **Intent:** `router.needs_image_tools` only fires on an image noun plus a create verb, or explicit phrases ("그려줘"). Phrases like "도커 이미지" or "이미지 분석" are excluded. No model-size bump.
+- **Intent:** `intent.needs_image_tools` only fires on an image noun plus a create verb, or explicit phrases ("그려줘"). Phrases like "도커 이미지" or "이미지 분석" are excluded. No model-size bump.
 - **Display:** the frontend card shows an inline thumbnail for `image/*` attachments.
 
-**Edit tools** (`inspect_document` / `edit_document` in `tools.py`, implementation in `docedit.py`) edit an existing xlsx/docx/pptx/hwpx in place.
+**Edit tools** (`inspect_document` / `edit_document` in `tools/edit.py`, implementation in `documents/editor.py`) edit an existing xlsx/docx/pptx/hwpx in place.
 - **Inspect:** returns `doc_revision` (sha256 of the file, first 12 chars), then one line per element: opaque id (`e12`), location (sheet/cell with header and row-label context, paragraph number, table row/column, slide/shape, notes), current value (≤200 chars), format summary, and editable or the reason it isn't.
   - Ids are deterministic for a given revision: the whole file is traversed and `scope` (`all`, `sheet:이름`, `slide:3`, `section:제목`) only filters the output.
   - Output is capped at 8000 chars and 400 elements per group.
@@ -249,11 +274,11 @@ To add a tool:
   - Files resolve only within this chat, or this chat's project files.
   - A scan-converted upload whose `stored_path` became a PDF falls back to the original `{id}.{ext}` beside it.
   - `.hwp` (old 한글 format) is rejected with a "convert to hwpx" message.
-- **Intent:** `router.needs_edit_tools` fires on an edit verb plus a file reference (or an editable attachment), and only when an editable file exists in this turn's attachments, the chat, or the project (`_has_files_in_context`). It bumps auto mode to medium.
+- **Intent:** `intent.needs_edit_tools` fires on an edit verb plus a file reference (or an editable attachment), and only when an editable file exists in this turn's attachments, the chat, or the project (`_has_files_in_context`). It bumps auto mode to medium.
 - **History markers:** `_build_history` marks uploads as `[첨부 파일: name (id=...)]`, project files as `[참고자료: name (id=...)]`, and generated files as `[생성된 파일: ...]` so the model can pass ids. `DOC_TOOLS_GUIDE`, sent on doc or edit turns, tells it never to echo these.
 
 **hwpx (한글)** is always enabled; there is no flag.
-- `docgen._build_hwpx` uses python-hwpx (pinned in `backend/requirements-hwpx.txt`, installed in its own Dockerfile layer). Lists become prefixed paragraphs, reported in `warnings`.
+- `generator._build_hwpx` uses python-hwpx (pinned in `backend/requirements-hwpx.txt`, installed in its own Dockerfile layer). Lists become prefixed paragraphs, reported in `warnings`.
 - hwpx edits patch `Contents/section*.xml`.
 - **Not verified:** whether files open in Hancom 한글 was not checked during development; it is being validated by hand. If it fails, the plan is to remove hwpx support entirely. That means removing:
   - `_build_hwpx`;
@@ -263,12 +288,12 @@ To add a tool:
 
 **Adding a format or tool — places to touch:**
 - **New output format:**
-  1. A `docgen` renderer branch.
-  2. The `MIME_BY_EXT` entry in `attachments.py`.
+  1. A `documents/generator.py` renderer branch.
+  2. The `MIME_BY_EXT` entry in `attachments/service.py`.
   3. The tool schema enum and description.
   4. The frontend icon in `AttachmentTypeIcon`.
 - **New editable format:**
-  1. A `docedit._inspect_<fmt>` function plus its entry in `_INSPECTORS`.
+  1. An `editor._inspect_<fmt>` function plus its entry in `_INSPECTORS`.
   2. The format in `supported_formats()`.
   3. The scope rule in `_scope_filter`.
   4. The ext list used by `_has_files_in_context`, which derives from `supported_formats()`.
@@ -276,7 +301,7 @@ To add a tool:
   1. Write the executor and its `ToolSpec`.
   2. Register it in `_REGISTRY`.
   3. Add a `get_tool_specs` flag for it.
-  4. Write an intent detector in `router.py`.
+  4. Write an intent detector in `routing/intent.py`.
   5. Wire the flag in `send_message`.
   6. Write a guide line if needed.
 
@@ -286,7 +311,7 @@ To add a tool:
 - Edit preserves formatting only at the part level. Inside an edited paragraph, emphasis on later runs is lost.
 - No add/delete operations.
 
-**File intent and routing:** `router.needs_file_tools(content, attachments)` is a lenient keyword detector.
+**File intent and routing:** `intent.needs_file_tools(content, attachments)` is a lenient keyword detector.
 - What triggers it:
   - format words;
   - a create verb plus a document noun;
@@ -299,7 +324,7 @@ To add a tool:
 - Only the matched keyword is logged (`파일 의도 감지`), never the message.
 - When it doesn't fire, the request is exactly as before (web_search only).
 
-**providers.py** abstracts the three vendors: `call_model` (non-streaming, no tools) and `stream_model_with_tools` (one streaming round).
+**llm/** abstracts the three vendors (`client.py`): `call_model` (non-streaming, no tools) and `stream_model_with_tools` (one streaming round).
 - **Tools:** `build_tools_for_company` converts `ToolSpec`s into each vendor's format.
 - **Neutral message format:** the loop builds messages that don't depend on the vendor:
   - assistant: `{"role":"assistant","content","tool_calls":[{id,name,arguments,provider_extra}]}`
@@ -317,15 +342,15 @@ To add a tool:
 - **Output limits:** OpenAI keeps the forced `reasoning_effort: "none"` whenever tools are attached. `max_output_tokens` is per call. When it's `None`, Anthropic uses `MAX_OUTPUT_TOKENS` (2048) and OpenAI/Gemini send no limit. When set, it goes out as OpenAI `max_completion_tokens`, Gemini `max_tokens`, or Anthropic `max_tokens`.
 - **Truncated tool calls:** a call cut off by the output limit is marked `truncated`, and the tool returns an `is_error` result telling the model to shrink the content.
 
-**Memory** (`memory.py`):
+**Memory** (`memory/extract.py`):
 - `UserMemory` is global. Each row is a topic: `category` (one of `나` / `주제` / `영역` / `사람`), `name`, `summary`, and `details` stored as a JSON-array string. The `나` category holds exactly one topic.
 - `ProjectMemory` has the same shape without `category`.
 - Extraction **recomputes everything** on each run: it sends the existing topics plus the new messages to `gpt-4o-mini`, deletes every row in that scope, and reinserts what the model returns. Row IDs therefore change on every extraction.
 - A per-conversation cursor, `Conversation.last_extracted_message_id`, means only new messages are processed. Reset it to NULL to force re-extraction.
 - Every trigger goes through `_extract_all_sequentially`, which holds an `asyncio.Lock`, because concurrent delete-and-reinsert runs would clobber each other.
-- Memory topics are read in **two** places: extraction (`memory.py`) and system-prompt injection (`conversations.py`). Update both when the schema changes.
+- Memory topics are read in **two** places: extraction (`memory/extract.py`) and system-prompt injection (`chat/router.py` via `chat/context.py`). Update both when the schema changes.
 
-**Attachments:** `attachments.py` handles upload, lifecycle, and orphan sweep. `extraction.py` does per-format text and image extraction, with a LibreOffice → PDF fallback. Extraction runs in the background, and `send_message` waits briefly for pending attachments. Files live under `uploads/chats/{chat_id}/` and `uploads/projects/{project_id}/`.
+**Attachments:** `attachments/router.py` has the endpoints; `attachments/service.py` handles storage, lifecycle, previews, and orphan sweep. `documents/extractor.py` does per-format text and image extraction, with a LibreOffice → PDF fallback. Extraction runs in the background, and `send_message` waits briefly for pending attachments. Files live under `uploads/chats/{chat_id}/` and `uploads/projects/{project_id}/`.
 
 **Generated files** reuse the `attachments` table with `source='generated'`. User uploads are `source='upload'`.
 - **Storage:** files go under `uploads/chats/{chat_id}/generated/`, so deleting the chat removes them. Limits are 25MB per file and 5 files per turn.
@@ -345,8 +370,8 @@ To add a tool:
   - Code still uses the `DEMO_USER_ID` constant as "the current user". When login is added, replace those usages with the logged-in user.
   - `conversations`, `projects`, `user_memory`, and `user_settings` have a `user_id` FK to `users` with `ON DELETE CASCADE`. `projects.user_id` is the newest, and project child tables (`project_files`, `project_memory`) get their owner through the project.
   - Deleting a user cascades in the DB but leaves uploaded files on disk, so deactivate with `is_active=false` instead.
-  - Every project endpoint goes through `projects._get_owned_project`, which returns 404 for another user's project. Assigning a chat to a project also requires the same owner.
-  - **Still unscoped by owner** (fine with one user, must be fixed with login): by-id endpoints for conversations, attachments, and memory topics (`settings.py`), the memory scheduler, and usage stats.
+  - Every project endpoint goes through `projects.router._get_owned_project`, which returns 404 for another user's project. Assigning a chat to a project also requires the same owner.
+  - **Still unscoped by owner** (fine with one user, must be fixed with login): by-id endpoints for conversations, attachments, and memory topics (`settings/router.py`), the memory scheduler, and usage stats.
 - Enum-like fields are plain `String` columns validated with Pydantic `Literal[...]` at the API boundary, never native Postgres enums.
 - Structured data is stored as JSON text in `Text` columns (e.g. `Attachment.extracted_text`, memory `details`).
 - Use `asyncio.create_task` for background work. There is no Celery or Redis.
