@@ -21,9 +21,10 @@ import {
 } from "@/lib/api";
 import { useAppData } from "@/contexts/AppDataContext";
 import { stashPendingMessage } from "@/lib/pendingMessage";
-import { PendingAttachment, Project, ProjectColor, ProjectFile } from "@/lib/types";
+import { Mode, PendingAttachment, Project, ProjectColor, ProjectFile, Size } from "@/lib/types";
 import { AttachmentChip, AttachmentTypeIcon, truncateFilename } from "@/components/AttachmentChip";
 import AttachmentViewerModal, { ViewerAttachment } from "@/components/AttachmentViewerModal";
+import ModelPicker from "@/components/ModelPicker";
 import UsageRing from "@/components/UsageRing";
 
 const PROJECT_COLOR_OPTIONS: { value: ProjectColor; swatchClassName: string; label: string }[] = [
@@ -145,6 +146,9 @@ export default function ProjectPage() {
   const [viewerFile, setViewerFile] = useState<ViewerAttachment | null>(null);
   const [quickInput, setQuickInput] = useState("");
   const [starting, setStarting] = useState(false);
+  // 새 채팅에 쓸 모델 - "/" 새 채팅 화면과 같은 기본값(Auto, 수동 선택 시 medium).
+  const [mode, setMode] = useState<Mode>("auto");
+  const [size, setSize] = useState<Size>("medium");
   const refFileInputRef = useRef<HTMLInputElement>(null);
   const refFileDragDepthRef = useRef(0);
 
@@ -386,7 +390,8 @@ export default function ProjectPage() {
       if (text || readyAttachments.length > 0) {
         stashPendingMessage(convId, {
           content: text,
-          mode: "auto",
+          mode,
+          size: mode !== "auto" ? size : undefined,
           attachmentIds: readyAttachments.map((a) => a.id),
           attachmentsSnapshot: readyAttachments.map((a) => ({
             id: a.id,
@@ -541,6 +546,15 @@ export default function ProjectPage() {
                 onKeyDown={handleQuickInputKeyDown}
                 placeholder="이 프로젝트에서 새로 시작할 메시지를 입력하세요"
                 className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
+              />
+              <ModelPicker
+                mode={mode}
+                size={size}
+                placement="down"
+                onSelect={(m, s) => {
+                  setMode(m);
+                  setSize(s);
+                }}
               />
               <button
                 type="button"

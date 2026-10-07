@@ -622,14 +622,14 @@ function UsagePanel() {
       {quota && (
         <div className="mb-6 rounded-xl bg-gray-50 p-4 dark:bg-gray-800/60">
           <div className="mb-2 flex items-center justify-between text-sm">
-            <span className="font-medium text-gray-700 dark:text-gray-300">남은 토큰</span>
+            <span className="font-medium text-gray-700 dark:text-gray-300">사용한 토큰</span>
             <span className="text-xs text-gray-400 dark:text-gray-500">
               {formatMonthDay(quota.cycle_start)} ~ {formatMonthDay(quota.cycle_end)} · 갱신까지{" "}
               {quota.days_left}일
             </span>
           </div>
           <p className="mb-2 text-[28px] font-semibold leading-tight text-gray-900 dark:text-gray-100">
-            {quota.remaining.toLocaleString()}
+            {quota.used.toLocaleString()}
             <span className="ml-1 text-[13px] font-normal text-gray-400 dark:text-gray-500">
               / {quota.limit.toLocaleString()} 토큰
             </span>
@@ -641,7 +641,7 @@ function UsagePanel() {
             />
           </div>
           <p className={`text-xs ${colors.text}`}>
-            {quota.used.toLocaleString()} 사용 · {quota.percent}%
+            {quota.percent}% 사용 · {quota.remaining.toLocaleString()} 토큰 남음
           </p>
           {quota.percent > 90 && (
             <p className="mt-2 text-xs text-red-700 dark:text-red-400">

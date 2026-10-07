@@ -25,10 +25,14 @@ export default function ModelPicker({
   mode,
   size,
   onSelect,
+  placement = "up",
 }: {
   mode: Mode;
   size: Size;
   onSelect: (mode: Mode, size: Size) => void;
+  // 메뉴를 펼칠 방향 - 화면 아래 입력창은 위로(기본), 위쪽에 있는 입력창(프로젝트
+  // 페이지의 새 채팅)은 부모의 overflow-hidden에 잘리지 않게 아래로 연다.
+  placement?: "up" | "down";
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -75,7 +79,7 @@ export default function ModelPicker({
       </button>
 
       {open && (
-        <div className="absolute bottom-full right-0 z-10 mb-2 w-64 rounded-xl border border-gray-200 bg-white py-1.5 shadow-lg dark:border-gray-700 dark:bg-gray-800">
+        <div className={`absolute right-0 z-10 w-64 ${placement === "down" ? "top-full mt-2" : "bottom-full mb-2"} rounded-xl border border-gray-200 bg-white py-1.5 shadow-lg dark:border-gray-700 dark:bg-gray-800`}>
           <button
             type="button"
             onClick={() => {
