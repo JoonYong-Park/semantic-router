@@ -30,7 +30,7 @@ curl -s http://localhost:8000/health | python3 -m json.tool   # also reports whe
 
 There is no test suite and no linter config. Verification is a container build, then hitting endpoints with `curl` and inspecting rows with `psql`.
 
-Deploys run on every push to `main`: a GitHub Actions self-hosted runner executes `scripts/deploy.sh`, which builds, health-checks, and rolls back to the `:previous` image on failure. Details are in docs/DEPLOYMENT.md.
+Deploys run on every push to `main`: a GitHub Actions self-hosted runner executes `scripts/deploy.sh`, which builds, health-checks, and rolls back to the `:previous` image on failure. Details are in docs/en/DEPLOYMENT.md (Korean: docs/ko/DEPLOYMENT.md). How to swap one of the 9 models: docs/en/MODEL_UPDATE.md (Korean: docs/ko/MODEL_UPDATE.md).
 
 ## Schema changes: there are no migrations
 
@@ -118,7 +118,7 @@ app/
 ├── main.py         app, router mounts, lifespan, legacy /chat
 ├── schemas.py      all Pydantic schemas (one file until login work)
 ├── core/           db.py (engine, session, init_db) · models.py (all tables) · tokens.py
-├── routing/        classifier.py · complexity.py · complexity_examples.py · catalog.py (9 models)
+├── routing/        classifier.py · complexity.py · complexity_examples.py · catalog.py + models.json (9 models)
 │                   selector.py (select_model, bump_size) · intent.py (needs_*_tools keyword detectors)
 ├── llm/            client.py (call_model, stream_model_with_tools) · messages.py (vendor converters)
 │                   tool_format.py · images.py · http.py (API keys, logged raise)
@@ -145,7 +145,7 @@ The `lifespan` in `main.py` starts three background tasks:
 - `complexity.py` and `complexity_examples.py`: complexity score.
 - `selector.py`: `select_model()`, which combines the two, and `bump_size()`.
 - `intent.py`: keyword intent detectors that decide which tool groups are sent.
-- `catalog.py`: the 9-model catalog.
+- `catalog.py`: loads the 9-model catalog from `models.json` (company × size → `model_id`, `display_name`) and fails at startup if any combination is missing or duplicated. To change a model, edit `models.json` and the matching `label` in `frontend/lib/models.ts` (the label must equal `display_name`; the frontend uses it to find the size badge).
 
 **Chat request path:** `chat/router.py` `send_message`
 1. Loads all context up front in its own session: personal instruction, imported memory, global memory, project instruction, project memory.
@@ -164,7 +164,7 @@ The `lifespan` in `main.py` starts three background tasks:
        - text streams out immediately as `chunk`;
        - if the model returned tool calls, every call is executed through `tools.registry.run_tool()`, an assistant message (with `tool_calls`) and one `tool` message per call are appended to a working copy of the history, and the loop calls the model again;
        - the loop ends on a round with no tool calls;
-       - the last round forces a final answer (`force_final`): OpenAI drops `tools`; Anthropic and Gemini keep `tools` and send `tool_choice` none;
+       - the last round forces a final answer (`force_final`): all three vendors keep `tools` and send `tool_choice` none;
        - if the loop ends with empty text, a fixed message is streamed and saved instead ("파일을 생성했습니다." when files were made).
 4. Text from different rounds is joined with `"\n\n"`. Per-round token usage is summed. Tool failures (executor exceptions, unknown tool name, unparseable arguments) are sent back to the model as `is_error` results and the loop continues. A model-call exception sends an `error` event and saves no answer; the question is already saved.
 5. **Tool calls and results are never stored in the DB.** Only the final assistant text is saved, so the next turn's history has no tool messages. `Message.web_search_used` / `web_search_query` are set from the web_search tool's `ToolResult.metadata`.
@@ -319,17 +319,22 @@ To add a tool:
 - What happens when it fires:
   - the three document tools are exposed alongside `web_search`;
   - `DOC_TOOLS_GUIDE` is appended to the end of the system prompt;
-  - every round uses `max_output_tokens=DOC_MAX_OUTPUT_TOKENS` (16000);
+  - every round uses `max_output_tokens=DOC_MAX_OUTPUT_TOKENS` (32000; must stay above Anthropic's default `MAX_OUTPUT_TOKENS` 16384 to mean anything);
   - auto mode is raised to at least medium via `bump_size`, while manual mode keeps the chosen size.
 - Only the matched keyword is logged (`파일 의도 감지`), never the message.
 - When it doesn't fire, the request is exactly as before (web_search only).
 
 **llm/** abstracts the three vendors (`client.py`): `call_model` (non-streaming, no tools) and `stream_model_with_tools` (one streaming round).
+- **OpenAI uses the Responses API** (`/v1/responses`, `_stream_openai_responses`); Gemini stays on its OpenAI-compatible Chat Completions endpoint. GPT-6 Astra / 6.1 Sol only allow function tools on Chat Completions with `reasoning_effort: "none"`, which they reject, so Chat Completions can't run our tools on them.
+  - Requests use `store: false` and `include: ["reasoning.encrypted_content"]`. Reasoning items from a tool-calling round are kept in the first tool call's `provider_extra["reasoning_items"]` and echoed back before the `function_call` items next round (same idea as Gemini's thought_signature).
+  - Tools are flat (`{type, name, description, parameters, strict}`); `strict` is always sent explicitly (`false` for `web_search`).
+  - Text comes from `response.output_text.delta`; finished `function_call` items from `response.output_item.done`; usage (`input_tokens` / `output_tokens`, reasoning included) from `response.completed` / `response.incomplete`. `incomplete_details.reason == "max_output_tokens"` marks the last call truncated.
+- **Anthropic workspace:** if the key isn't scoped to a workspace, set `ANTHROPIC_WORKSPACE_ID`; `_anthropic_headers` then sends `anthropic-workspace-id`.
 - **Tools:** `build_tools_for_company` converts `ToolSpec`s into each vendor's format.
 - **Neutral message format:** the loop builds messages that don't depend on the vendor:
   - assistant: `{"role":"assistant","content","tool_calls":[{id,name,arguments,provider_extra}]}`
   - tool result: `{"role":"tool","tool_call_id","name","content","is_error"}`
-- **Converters:** `_prepare_openai_messages` (OpenAI and Gemini) and `_prepare_anthropic_messages`.
+- **Converters:** `_prepare_openai_responses_input` (OpenAI), `_prepare_openai_messages` (Gemini), and `_prepare_anthropic_messages`.
   - Anthropic: all tool results go into one user message as `tool_result` blocks. The prompt-cache breakpoint is placed only within the pre-loop history (`history_len`).
   - Gemini: its `extra_content.google.thought_signature` is kept in `provider_extra` and echoed back. Omitting it is a 400.
 - **Tool-call events:** `stream_model_with_tools` yields every tool call at the end of the response, as `{"type":"tool_call",id,name,arguments,raw_arguments,parse_error,truncated,provider_extra}`. Truncated output (`max_tokens` / `length`) marks the last call `parse_error` and `truncated`.
@@ -339,13 +344,21 @@ To add a tool:
   - Anthropic: `disable_parallel_tool_use`.
   - Gemini: has no working switch for this.
   - The loop still executes and answers every call it receives.
-- **Output limits:** OpenAI keeps the forced `reasoning_effort: "none"` whenever tools are attached. `max_output_tokens` is per call. When it's `None`, Anthropic uses `MAX_OUTPUT_TOKENS` (2048) and OpenAI/Gemini send no limit. When set, it goes out as OpenAI `max_completion_tokens`, Gemini `max_tokens`, or Anthropic `max_tokens`.
+- **Output limits:** `max_output_tokens` is per call. When it's `None`, Anthropic uses `MAX_OUTPUT_TOKENS` (16384; Fable 5.1 / Opus 5.5 always think, and thinking counts against it) and OpenAI/Gemini send no limit. When set, it goes out as OpenAI `max_output_tokens` (includes reasoning tokens), Gemini `max_tokens`, or Anthropic `max_tokens`. No `reasoning_effort` is sent, so each OpenAI model uses its default effort.
+- **Retries:** `call_model` and `stream_model_with_tools` retry transient failures (HTTP 500/502/503/504/529, connect errors) up to 2 times with 1s/3s waits (`RETRY_STATUS`, `RETRY_DELAYS`). A stream is retried only if it failed before yielding anything, so no text is duplicated. 429 is not retried, because quota-exceeded and rate-limit share the code. Retries log `모델 호출 재시도`.
 - **Truncated tool calls:** a call cut off by the output limit is marked `truncated`, and the tool returns an `is_error` result telling the model to shrink the content.
 
 **Memory** (`memory/extract.py`):
 - `UserMemory` is global. Each row is a topic: `category` (one of `나` / `주제` / `영역` / `사람`), `name`, `summary`, and `details` stored as a JSON-array string. The `나` category holds exactly one topic.
 - `ProjectMemory` has the same shape without `category`.
-- Extraction **recomputes everything** on each run: it sends the existing topics plus the new messages to `gpt-4o-mini`, deletes every row in that scope, and reinserts what the model returns. Row IDs therefore change on every extraction.
+- Extraction is **diff-based**. It sends the existing topics (each tagged with a short key `t1`, `t2`…) plus the new messages to the OpenAI small model (`MEMORY_MODEL = get_model("openai", "small")`). The model returns only `{add, update, delete}`, and the code applies just those (`_apply_user_changes` / `_apply_project_changes`).
+  - A topic the model doesn't mention is left untouched, so a model that "forgets" a topic can no longer erase it, and row IDs stay stable.
+  - `update` carries the full merged `details` list.
+  - `delete` is for existing topics that fail the storage criteria, never for "not mentioned in this conversation".
+  - Assistant replies are clipped to `ASSISTANT_CONTEXT_CHARS` (300) in the prompt; facts must come from user messages.
+  - The `나` single-topic rule is enforced in code: an `add` of `나` when one exists is merged into it, and an `update` can't turn a second topic into `나`.
+  - Each run logs `메모리 갱신` with add/update/delete counts and deleted topic names + reasons.
+- **Storage criteria** live in the prompt: store only facts that would help in an unrelated future conversation (profile, preferences, people, ongoing work). One-off task requests, assistant-generated content, file names, sample data, and single knowledge questions are excluded, with real past mistakes listed as negative examples. Explicit user preferences (answer format, length, tone) must be stored.
 - A per-conversation cursor, `Conversation.last_extracted_message_id`, means only new messages are processed. Reset it to NULL to force re-extraction.
 - Every trigger goes through `_extract_all_sequentially`, which holds an `asyncio.Lock`, because concurrent delete-and-reinsert runs would clobber each other.
 - Memory topics are read in **two** places: extraction (`memory/extract.py`) and system-prompt injection (`chat/router.py` via `chat/context.py`). Update both when the schema changes.

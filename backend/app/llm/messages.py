@@ -216,3 +216,65 @@ def _prepare_openai_messages(messages: list[dict], company: Company) -> list[dic
             continue
         converted.append({"role": role, "content": _to_openai_content(m["content"])})
     return converted
+
+
+def _to_openai_responses_content(content: str | list[dict]) -> str | list[dict]:
+    """OpenAI Responses API의 user 입력 content. 이미지는 input_image, PDF는
+    input_file(file_data에 data URI)로 보낸다."""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if block["type"] == "text":
+            parts.append({"type": "input_text", "text": block["text"]})
+        elif block["type"] == "image":
+            parts.append(
+                {"type": "input_image", "image_url": f"data:{block['media_type']};base64,{block['data']}"}
+            )
+        else:  # document (PDF)
+            parts.append(
+                {
+                    "type": "input_file",
+                    "filename": "attachment.pdf",
+                    "file_data": f"data:{block['media_type']};base64,{block['data']}",
+                }
+            )
+    return parts
+
+
+def _prepare_openai_responses_input(messages: list[dict]) -> list[dict]:
+    """중립 메시지를 OpenAI Responses API의 input 아이템 목록으로 변환한다.
+    - assistant의 tool_calls → function_call 아이템(호출마다 하나)
+    - tool 결과 → function_call_output 아이템
+    - 툴 호출 직전에 나온 reasoning 아이템(provider_extra["reasoning_items"])은
+      그 호출들 앞에 그대로 되돌려 보낸다 - store=False라 서버에 이전 응답이 없어서,
+      추론 모델이 이전 회차의 추론을 이어 가려면 encrypted_content가 필요하다."""
+    items: list[dict] = []
+    for m in messages:
+        role = m["role"]
+        if role == "tool":
+            output = m["content"]
+            if m.get("is_error"):
+                output = f"[툴 실행 오류] {output}"
+            items.append({"type": "function_call_output", "call_id": m["tool_call_id"], "output": output})
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            if m.get("content"):
+                items.append({"role": "assistant", "content": m["content"]})
+            for call in m["tool_calls"]:
+                for reasoning in (call.get("provider_extra") or {}).get("reasoning_items", []):
+                    items.append(reasoning)
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call["id"],
+                        "name": call["name"],
+                        "arguments": json.dumps(call.get("arguments") or {}, ensure_ascii=False),
+                    }
+                )
+            continue
+        if role == "user":
+            items.append({"role": "user", "content": _to_openai_responses_content(m["content"])})
+        else:  # system / assistant 텍스트
+            items.append({"role": role, "content": m["content"] if isinstance(m["content"], str) else _to_openai_responses_content(m["content"])})
+    return items

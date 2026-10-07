@@ -7,22 +7,17 @@ export interface ModelOption {
   group: string;
 }
 
-// backend/app/models_config.py의 MODEL_CATALOG와 반드시 같은 순서/이름으로 유지
+// backend/app/routing/models.json의 display_name과 반드시 같은 이름으로 유지
 export const MODEL_OPTIONS: ModelOption[] = [
-  { mode: "openai", size: "large", label: "GPT-5.6 Sol", group: "OpenAI" },
-  { mode: "openai", size: "medium", label: "GPT-5.6 Terra", group: "OpenAI" },
-  { mode: "openai", size: "small", label: "GPT-5.6 Luna", group: "OpenAI" },
+  { mode: "openai", size: "large", label: "GPT-6 Astra", group: "OpenAI" },
+  { mode: "openai", size: "medium", label: "GPT-6.1 Sol", group: "OpenAI" },
+  { mode: "openai", size: "small", label: "GPT-6 Luna", group: "OpenAI" },
   { mode: "google", size: "large", label: "Gemini 3.1 Pro", group: "Google" },
-  { mode: "google", size: "medium", label: "Gemini 3.6 Flash", group: "Google" },
+  { mode: "google", size: "medium", label: "Gemini 3.8 Flash", group: "Google" },
   { mode: "google", size: "small", label: "Gemini 3.5 Flash Lite", group: "Google" },
-  { mode: "anthropic", size: "large", label: "Claude Opus 5", group: "Anthropic" },
-  { mode: "anthropic", size: "medium", label: "Claude Sonnet 5", group: "Anthropic" },
-  {
-    mode: "anthropic",
-    size: "small",
-    label: "Claude Haiku 4.5",
-    group: "Anthropic",
-  },
+  { mode: "anthropic", size: "large", label: "Claude Fable 5.1", group: "Anthropic" },
+  { mode: "anthropic", size: "medium", label: "Claude Opus 5.5", group: "Anthropic" },
+  { mode: "anthropic", size: "small", label: "Claude Sonnet 5.5", group: "Anthropic" },
 ];
 
 export interface CompanyIcon {

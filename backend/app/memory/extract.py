@@ -9,7 +9,7 @@ chat/router.py, settings/router.py와 마찬가지로 로그인이 없는 데모
 방식은 서로 완전히 독립적이고(하나가 없어져도 다른 쪽 동작에 영향 없음), 실행
 로직(_extract_all_sequentially)만 공유하면서 asyncio.Lock으로 동시 실행만
 막는다 - 두 트리거가 우연히 겹쳐도 같은 대화방의 UserMemory를 동시에
-지웠다 쓰는 경쟁 상태가 나지 않게. Celery/Redis 없이 asyncio로 충분한
+고쳐 쓰는 경쟁 상태가 나지 않게. Celery/Redis 없이 asyncio로 충분한
 데모 규모라 판단해 attachments/service.py의 orphan_cleanup_loop와 동일한 패턴을 썼다.
 수동 트리거는 나중에 제거될 예정이라 그 전까지는 최대한 손대지 않았다."""
 
@@ -21,12 +21,12 @@ from datetime import datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.llm.client import call_model
 from app.core.db import SessionLocal
 from app.core.models import DEMO_USER_ID, Conversation, Message, ProjectMemory, UserMemory
-from app.routing.catalog import ModelSpec
+from app.routing.catalog import get_model
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -38,14 +38,117 @@ KST = ZoneInfo("Asia/Seoul")
 SCHEDULED_TIMES = [(7, 0), (12, 30)]
 
 
-# 9개 모델 카탈로그에 없는 모델이라 ModelSpec을 즉석에서 만들어 쓴다
-# (요약 작업이라 품질보다 비용/속도가 중요해서 작은 모델을 고정으로 지정).
-MEMORY_MODEL = ModelSpec(
-    model_id="gpt-4o-mini",
-    company="openai",
-    size="small",
-    display_name="GPT-4o mini",
-)
+# 요약 작업이라 비용/속도를 우선해 OpenAI small을 쓴다. gpt-4o-mini는 "저장할 가치"
+# 판단이 약해서(작업 요청/모델 설명을 그대로 저장, 기존 쓰레기 토픽 삭제를 거의 안 함) 
+# 카탈로그의 small 모델로 바꿨다.
+MEMORY_MODEL = get_model("openai", "small")
+
+
+# 추출 프롬프트에 넣는 assistant 답변 길이 상한(자) - 맥락 파악용.
+ASSISTANT_CONTEXT_CHARS = 300
+
+_GLOBAL_CATEGORIES = ("나", "주제", "영역", "사람")
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + "…(생략)"
+
+
+def _parse_changes(data: dict) -> dict[str, list[dict]]:
+    """모델 응답을 {"add", "update", "delete"} 리스트로 정규화한다(잘못된 항목은 버림)."""
+    out: dict[str, list[dict]] = {}
+    for key in ("add", "update", "delete"):
+        items = data.get(key) if isinstance(data, dict) else None
+        out[key] = [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+    return out
+
+
+def _details_json(topic: dict) -> str:
+    details = topic.get("details") or []
+    if not isinstance(details, list):
+        details = []
+    return json.dumps([str(d) for d in details if str(d).strip()], ensure_ascii=False)
+
+
+async def _delete_marked(session, rows_by_key: dict, changes: dict) -> set[str]:
+    """delete 항목의 기존 토픽을 지우고, 지운 키 집합을 돌려준다(같은 응답의 update가
+    지운 토픽을 다시 건드리지 않게)."""
+    deleted: set[str] = set()
+    for item in changes["delete"]:
+        key = item.get("id")
+        row = rows_by_key.get(key)
+        if row is not None and key not in deleted:
+            await session.delete(row)
+            deleted.add(key)
+    return deleted
+
+
+def _update_row(row, item: dict) -> None:
+    if item.get("name"):
+        row.name = item["name"]
+    if item.get("summary"):
+        row.summary = item["summary"]
+    if "details" in item:
+        row.details = _details_json(item)
+
+
+async def _apply_project_changes(session, project_id, rows_by_key: dict, changes: dict) -> None:
+    deleted = await _delete_marked(session, rows_by_key, changes)
+    for item in changes["update"]:
+        row = rows_by_key.get(item.get("id"))
+        if row is not None and item.get("id") not in deleted:
+            _update_row(row, item)
+    for item in changes["add"]:
+        if not item.get("name") or not item.get("summary"):
+            continue
+        session.add(
+            ProjectMemory(
+                project_id=project_id,
+                name=item["name"],
+                summary=item["summary"],
+                details=_details_json(item),
+            )
+        )
+
+
+async def _apply_user_changes(session, user_id, rows_by_key: dict, changes: dict) -> None:
+    deleted = await _delete_marked(session, rows_by_key, changes)
+    live = {k: r for k, r in rows_by_key.items() if k not in deleted}
+    # "나" 토픽은 전체에서 정확히 1개 - 이미 있으면 새 "나"를 만들지 않고 거기에 합친다.
+    me_row = next((r for r in live.values() if r.category == "나"), None)
+
+    for item in changes["update"]:
+        row = live.get(item.get("id"))
+        if row is None:
+            continue
+        category = item.get("category")
+        # 다른 토픽을 "나"로 바꿔 "나"가 2개가 되는 것은 막는다(카테고리만 무시).
+        if category in _GLOBAL_CATEGORIES and not (category == "나" and me_row is not None and row is not me_row):
+            row.category = category
+        _update_row(row, item)
+
+    for item in changes["add"]:
+        category = item.get("category")
+        if not item.get("name") or not item.get("summary") or category not in _GLOBAL_CATEGORIES:
+            continue
+        if category == "나" and me_row is not None:
+            # 모델이 지시를 어기고 "나"를 새로 만든 경우 - 기존 "나"의 세부 사실에 합친다.
+            merged = json.loads(me_row.details) if me_row.details else []
+            for d in json.loads(_details_json(item)):
+                if d not in merged:
+                    merged.append(d)
+            me_row.details = json.dumps(merged, ensure_ascii=False)
+            continue
+        row = UserMemory(
+            user_id=user_id,
+            category=category,
+            name=item["name"],
+            summary=item["summary"],
+            details=_details_json(item),
+        )
+        session.add(row)
+        if category == "나":
+            me_row = row
 
 
 async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None:
@@ -87,11 +190,12 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
             existing_rows = existing_result.scalars().all()
             existing_topics = [
                 {
+                    "id": f"t{i + 1}",
                     "name": m.name,
                     "summary": m.summary,
                     "details": json.loads(m.details) if m.details else [],
                 }
-                for m in existing_rows
+                for i, m in enumerate(existing_rows)
             ]
         else:
             mem_result = await session.execute(
@@ -100,22 +204,32 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
             existing_rows = mem_result.scalars().all()
             existing_topics = [
                 {
+                    "id": f"t{i + 1}",
                     "category": m.category,
                     "name": m.name,
                     "summary": m.summary,
                     "details": json.loads(m.details) if m.details else [],
                 }
-                for m in existing_rows
+                for i, m in enumerate(existing_rows)
             ]
+        rows_by_key = {f"t{i + 1}": m for i, m in enumerate(existing_rows)}
 
         existing_json = json.dumps({"topics": existing_topics}, ensure_ascii=False)
-        messages_text = "\n".join(f"{m.role}: {m.content}" for m in new_messages)
+        # assistant 답변은 사용자 말의 맥락을 잡는 데만 필요하므로 앞부분만 넣는다 -
+        # 전문을 넣으면 모델이 설명한 내용(개념 해설 등)이 사용자 사실로 저장됐다.
+        messages_text = "\n".join(
+            f"{m.role}: {m.content if m.role == 'user' else _clip(m.content, ASSISTANT_CONTEXT_CHARS)}"
+            for m in new_messages
+        )
 
         if is_project:
             category_rule = ""
             format_example = (
-                '{"topics": [{"name": "토픽 이름", "summary": "한 줄 요약", '
-                '"details": ["세부 사실1", "세부 사실2"]}]}'
+                '{"add": [{"name": "토픽 이름", "summary": "한 줄 요약", '
+                '"details": ["세부 사실1"]}], '
+                '"update": [{"id": "t1", "name": "토픽 이름", "summary": "한 줄 요약", '
+                '"details": ["기존 사실", "새 사실"]}], '
+                '"delete": [{"id": "t2", "reason": "삭제 사유"}]}'
             )
         else:
             category_rule = (
@@ -126,7 +240,9 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
                 "전체를 통틀어 토픽을 정확히 1개(Profile)만 유지해야 하고, 새로운 "
                 "'나' 관련 사실은 기존 '나' 토픽 하나에 계속 병합해 "
                 "(절대 2개 이상 만들지 마)\n"
-                "  - \"주제\": 사용자가 관심 갖거나 반복해서 묻는 주제/기술/분야\n"
+                "  - \"주제\": 사용자가 관심을 직접 밝혔거나(\"요즘 ~를 공부 중이야\", "
+                "\"~에 관심 많아\") [기존 메모리]와 [새 대화]를 통틀어 여러 번 다룬 "
+                "주제/기술/분야만. 질문 한 번이나 작업 요청 한 번으로는 만들지 마\n"
                 "  - \"영역\": 사용자가 진행 중인 프로젝트/업무 영역(프로젝트 "
                 "자체 메모리와는 별개로, 전역 대화에서 드러나는 업무 맥락)\n"
                 "  - \"사람\": 대화에 등장하는 특정 인물(상사, 동료, 팀원 등 "
@@ -144,8 +260,11 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
                 "이름/직책은 각 '사람' 토픽에서만 다뤄)\n"
             )
             format_example = (
-                '{"topics": [{"category": "나", "name": "토픽 이름", '
-                '"summary": "한 줄 요약", "details": ["세부 사실1", "세부 사실2"]}]}'
+                '{"add": [{"category": "주제", "name": "토픽 이름", '
+                '"summary": "한 줄 요약", "details": ["세부 사실1"]}], '
+                '"update": [{"id": "t1", "category": "나", "name": "토픽 이름", '
+                '"summary": "한 줄 요약", "details": ["기존 사실", "새 사실"]}], '
+                '"delete": [{"id": "t2", "reason": "삭제 사유"}]}'
             )
 
         prompt = (
@@ -153,20 +272,47 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
             f"[새 대화]\n{messages_text}\n\n"
             "메모리는 '토픽' 단위로 관리돼. 각 토픽은 이름(name), 한 줄 요약"
             "(summary), 세부 사실 불릿 목록(details)으로 구성돼.\n"
-            "아래 규칙으로 [기존 메모리]를 갱신한 최종 전체 토픽 목록을 만들어줘.\n"
-            "- [새 대화]에서 새로운 사실(직업, 소속, 선호도, 담당 업무, 관심사 등)을 "
-            "찾으면, 관련 있는 기존 토픽이 있으면 그 토픽의 summary/details에 "
-            "병합하고, 없으면 새 토픽을 만들어\n"
-            "- 기존 토픽과 내용이 중복되면 유지, 모순되면 최신 내용으로 교체하고 "
-            "summary를 그에 맞게 다시 작성해\n"
+            "아래 규칙으로 [기존 메모리]에 적용할 변경사항만 만들어줘. 응답에 넣지 "
+            "않은 기존 토픽은 그대로 유지되므로, 바꿀 게 없는 토픽은 절대 응답에 넣지 마.\n"
+            "- 저장 기준: \"이 사실이 앞으로 전혀 다른 대화에서 사용자에게 더 잘 "
+            "답하는 데 도움이 되는가?\" 그렇다고 확신할 때만 저장해. 애매하면 "
+            "저장하지 마\n"
+            "- 사실의 출처는 user 메시지여야 해. assistant 메시지는 user 말의 "
+            "맥락을 이해하는 데만 쓰고, assistant가 쓴 설명/답변/생성물 내용을 "
+            "사용자에 대한 사실로 저장하지 마\n"
+            "- 반대로 사용자가 직접 밝힌 선호(답변 형식·길이·말투·언어 등, 예: \"답변은 "
+            "표로 정리해줘\", \"항상 짧게 답해\")는 앞으로의 모든 대화에 쓰이므로 "
+            "반드시 저장해\n"
+            "- [새 대화]에서 저장할 새 사실을 찾으면, 관련 있는 기존 토픽이 있으면 "
+            "update(그 토픽 id + 병합한 전체 summary/details - details는 기존 사실도 "
+            "빠짐없이 포함한 최종 목록), 없으면 add로 새 토픽을 만들어\n"
+            "- 기존 사실과 모순되면 update에서 최신 내용으로 교체하고 summary를 다시 써. "
+            "이미 있는 사실과 같은 내용이면 아무것도 하지 마\n"
             f"{category_rule}"
-            '- 일반 지식 질문 ("~가 뭐야?" 형태) → 무시\n'
+            "- 다음은 저장하지 마(무시):\n"
+            "  - 일회성 작업 요청: 이미지/그림/포스터 생성, 문서·엑셀·PPT 작성, "
+            "번역, 요약, 코드 예시 작성 등 '한 번 해 달라'는 요청 자체와 그 결과물\n"
+            "  - 모델(assistant)이 생성한 내용과 설명(개념 해설, 코드, 문구 등)\n"
+            "  - 파일명, 예시/샘플 데이터, 테스트용 문장, 인사말\n"
+            '  - 일반 지식 질문 한 번 ("~가 뭐야?", "~ 설명해줘" 형태)\n'
+            "- 저장하면 안 되는 실제 사례(이런 토픽은 만들지 마):\n"
+            '  - "고양이 일러스트" / "산 풍경 이미지" / "여름 행사 포스터": 이미지 생성 요청 한 번\n'
+            '  - "팀 회의 안건": 워드 파일 작성 요청 한 번\n'
+            '  - "매출 추이": 표를 만들려고 넣은 예시 숫자\n'
+            '  - "명언": 명언을 하나 알려 달라는 요청과 그 답\n'
+            '  - "CAP 정리": assistant가 설명한 개념 내용(C/A/P 정의, 해결 패턴 등)\n'
+            '  - "이진 탐색": 코드 예시를 한 번 요청한 것\n'
+            '  - 파일명 "이미지_20261006_032620.png" 같은 생성 파일 이름\n'
             "- 1인칭(나, 내, 저) 및 2인칭(너, 당신) 표현을 쓰지 말고 "
             "'사용자'라고 표현해 (이 메모리는 나중에 다른 대화의 system 메시지로 "
             "다시 들어가므로, 대화체를 그대로 옮기면 안 됨)\n"
-            "- [새 대화]에서 바뀌지 않은 기존 토픽은 그대로 결과에 포함시켜 "
-            "(응답은 '기존 전체 + 새 변경사항'을 합친 최종본이어야 함)\n"
-            "- 최종 토픽 목록 전체를 JSON으로만 반환\n"
+            "- delete: [기존 메모리] 토픽 중 위 저장 기준에 맞지 않는 것(작업 요청, "
+            "모델 생성 내용, 예시 데이터, 파일명, 지식 질문 한 번 등 - 위 '실제 사례' 같은 "
+            "토픽)은 id와 사유를 적어 delete에 넣어. [새 대화]에 언급되지 않았다는 "
+            "이유만으로는 절대 삭제하지 마 - 사람/소속/업무/선호처럼 기준에 맞는 토픽은 "
+            "새 대화와 무관해도 유지돼야 해\n"
+            "- 변경이 없으면 {\"add\": [], \"update\": [], \"delete\": []}을 반환해\n"
+            "- JSON으로만 반환\n"
             "- 아래 반환 형식의 값들은 형식만 보여주는 자리표시자다. [기존 메모리]나 "
             "[새 대화]에 실제로 나오지 않은 내용이면 절대 포함하지 마라\n\n"
             f"반환 형식: {format_example}"
@@ -178,55 +324,23 @@ async def _extract_memory_for_conversation(user_id: UUID, conv_id: UUID) -> None
             if not match:
                 return
             data = json.loads(match.group())
-            topics = data.get("topics", [])
+            changes = _parse_changes(data)
         except Exception as exc:  # noqa: BLE001
             logger.error("메모리 추출 실패 (conv_id=%s): %s", conv_id, exc)
             return
 
-        # 기존 메모리 전체를 새로 뽑은 최종본으로 교체 (모델이 추가/유지/교체를 다 반영해서 줌)
+        # 모델이 돌려준 변경분만 반영한다. 응답에 없는 기존 토픽은 건드리지 않아서,
+        # 모델이 목록을 다시 쓰다 토픽을 빠뜨려도 사라지지 않고 행 id도 유지된다.
         if is_project:
-            await session.execute(
-                delete(ProjectMemory).where(ProjectMemory.project_id == conv.project_id)
-            )
-            for topic in topics:
-                name = topic.get("name")
-                summary = topic.get("summary")
-                if not name or not summary:
-                    continue
-                session.add(
-                    ProjectMemory(
-                        project_id=conv.project_id,
-                        name=name,
-                        summary=summary,
-                        details=json.dumps(topic.get("details", []), ensure_ascii=False),
-                    )
-                )
+            await _apply_project_changes(session, conv.project_id, rows_by_key, changes)
         else:
-            await session.execute(delete(UserMemory).where(UserMemory.user_id == user_id))
-            seen_me = False
-            for topic in topics:
-                name = topic.get("name")
-                summary = topic.get("summary")
-                category = topic.get("category")
-                if not name or not summary or category not in (
-                    "나", "주제", "영역", "사람",
-                ):
-                    continue
-                if category == "나":
-                    # 모델이 지시를 어기고 "나" 토픽을 여러 개 반환하는 경우에
-                    # 대비한 방어적 가드 - 첫 번째만 쓰고 나머지는 버린다.
-                    if seen_me:
-                        continue
-                    seen_me = True
-                session.add(
-                    UserMemory(
-                        user_id=user_id,
-                        category=category,
-                        name=name,
-                        summary=summary,
-                        details=json.dumps(topic.get("details", []), ensure_ascii=False),
-                    )
-                )
+            await _apply_user_changes(session, user_id, rows_by_key, changes)
+        logger.info(
+            "메모리 갱신 (conv_id=%s, scope=%s): 추가 %d, 수정 %d, 삭제 %d %s",
+            conv_id, "project" if is_project else "global",
+            len(changes["add"]), len(changes["update"]), len(changes["delete"]),
+            [f"{rows_by_key[d['id']].name}({d.get('reason', '')})" for d in changes["delete"] if d.get("id") in rows_by_key],
+        )
 
         conv.last_extracted_message_id = new_messages[-1].id
         await session.commit()
@@ -239,10 +353,10 @@ _extraction_lock = asyncio.Lock()
 
 
 async def _extract_all_sequentially(conv_ids: list[UUID]) -> None:
-    # 채팅방마다 "기존 메모리 전체 삭제 → 새로 계산한 결과 삽입"을 하기 때문에,
-    # 여러 채팅방을 asyncio.create_task로 동시에 돌리면 나중에 커밋되는 쪽이
-    # 앞서 처리된 채팅방의 결과까지 지워버리는 경쟁 상태가 생긴다. 그래서 하나의
-    # 백그라운드 태스크 안에서 순서대로(await) 처리해 서로 겹치지 않게 한다.
+    # 채팅방마다 "기존 메모리 읽기 → 모델에 변경분 요청 → 반영"을 하기 때문에,
+    # 여러 채팅방을 asyncio.create_task로 동시에 돌리면 서로 오래된 목록을 기준으로
+    # 수정/삭제해 결과가 꼬인다(같은 토픽 중복 추가 등). 그래서 하나의 백그라운드
+    # 태스크 안에서 순서대로(await) 처리해 서로 겹치지 않게 한다.
     async with _extraction_lock:
         for conv_id in conv_ids:
             await _extract_memory_for_conversation(DEMO_USER_ID, conv_id)

@@ -17,11 +17,11 @@ browser(:3000)  →  frontend (Next.js)
 
 | Company | Small | Medium | Large |
 | --- | --- | --- | --- |
-| OpenAI | gpt-5.6-luna | gpt-5.6-terra | gpt-5.6-sol |
-| Google | gemini-3.5-flash-lite | gemini-3.6-flash | gemini-3.1-pro-preview |
-| Anthropic | claude-haiku-4-5-20251001 | claude-sonnet-5 | claude-opus-5 |
+| OpenAI | gpt-6-luna | gpt-6.1-sol | gpt-6-astra |
+| Google | gemini-3.5-flash-lite | gemini-3.8-flash | gemini-3.1-pro-preview |
+| Anthropic | claude-sonnet-5-5 | claude-opus-5-5 | claude-fable-5-1 |
 
-Model IDs and routing maps live in [backend/app/routing/catalog.py](backend/app/routing/catalog.py).
+Model IDs and routing maps live in [backend/app/routing/models.json](backend/app/routing/models.json).
 
 ## Features
 

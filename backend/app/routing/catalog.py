@@ -1,7 +1,9 @@
-"""9개 모델 카탈로그와 라우팅 정책."""
+"""9개 모델 카탈로그(models.json)와 라우팅 정책."""
 
+import json
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Literal, get_args
 
 Company = Literal["openai", "google", "anthropic"]
 Size = Literal["small", "medium", "large"]
@@ -15,19 +17,29 @@ class ModelSpec:
     display_name: str
 
 
-MODEL_CATALOG: dict[tuple[Company, Size], ModelSpec] = {
-    ("openai", "large"): ModelSpec("gpt-5.6-sol", "openai", "large", "GPT-5.6 Sol"),
-    ("openai", "medium"): ModelSpec("gpt-5.6-terra", "openai", "medium", "GPT-5.6 Terra"),
-    ("openai", "small"): ModelSpec("gpt-5.6-luna", "openai", "small", "GPT-5.6 Luna"),
-    
-    ("google", "large"): ModelSpec("gemini-3.1-pro-preview", "google", "large", "Gemini 3.1 Pro"),
-    ("google", "medium"): ModelSpec("gemini-3.6-flash", "google", "medium", "Gemini 3.6 Flash"),
-    ("google", "small"): ModelSpec("gemini-3.5-flash-lite", "google", "small", "Gemini 3.5 Flash Lite"),
+_MODELS_FILE = Path(__file__).with_name("models.json")
 
-    ("anthropic", "large"): ModelSpec("claude-opus-5", "anthropic", "large", "Claude Opus 5"),
-    ("anthropic", "medium"): ModelSpec("claude-sonnet-5", "anthropic", "medium", "Claude Sonnet 5"),
-    ("anthropic", "small"): ModelSpec("claude-haiku-4-5-20251001", "anthropic", "small", "Claude Haiku 4.5"),
-}
+
+def _load_catalog() -> dict[tuple[Company, Size], ModelSpec]:
+    """models.json에서 9개 모델을 읽는다. 회사 x 크기 조합이 하나라도 빠지거나
+    중복되면 기동 시점에 바로 실패시킨다(잘못된 설정으로 요청 중에 KeyError가
+    나는 것보다 낫다)."""
+    entries = json.loads(_MODELS_FILE.read_text(encoding="utf-8"))["models"]
+    catalog: dict[tuple[Company, Size], ModelSpec] = {}
+    for e in entries:
+        key = (e["company"], e["size"])
+        if key[0] not in get_args(Company) or key[1] not in get_args(Size):
+            raise ValueError(f"models.json: 알 수 없는 회사/크기 {key}")
+        if key in catalog:
+            raise ValueError(f"models.json: 중복된 회사/크기 {key}")
+        catalog[key] = ModelSpec(e["model_id"], e["company"], e["size"], e["display_name"])
+    missing = [(c, sz) for c in get_args(Company) for sz in get_args(Size) if (c, sz) not in catalog]
+    if missing:
+        raise ValueError(f"models.json: 빠진 회사/크기 {missing}")
+    return catalog
+
+
+MODEL_CATALOG: dict[tuple[Company, Size], ModelSpec] = _load_catalog()
 
 # --- 라우팅 정책 1: task_category(14개 MMLU-Pro 카테고리) -> 회사 ---
 # 분류기(llm-semantic-router/mmbert32k-intent-classifier-merged)가 반환하는

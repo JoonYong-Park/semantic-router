@@ -61,8 +61,10 @@ MAX_TOOL_ROUNDS = 5
 
 
 # 문서 툴이 노출된 턴의 회차별 출력 상한 - 문서 본문 전체가 툴 인자 JSON으로
-# 나오므로 기본값(Anthropic 2048 / 그 외 무제한)보다 넉넉하게 명시한다.
-DOC_MAX_OUTPUT_TOKENS = 16000
+# 나오므로 넉넉하게 명시한다. 기본 상한(Anthropic MAX_OUTPUT_TOKENS 16384)보다 커야
+# 의미가 있고, 추론 모델은 추론 토큰도 여기 포함된다. 현재 9개 모델의 최대 출력
+# (Gemini Flash 65K, Claude 5.5/GPT-6 128K) 안쪽인 32000으로 둔다.
+DOC_MAX_OUTPUT_TOKENS = 32000
 
 
 # 수정 의도(inspect/edit_document) 턴의 최대 회차 - inspect → edit → 답변에

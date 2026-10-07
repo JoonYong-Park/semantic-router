@@ -1,5 +1,7 @@
 # Deployment (CI/CD)
 
+> 한국어: [../ko/DEPLOYMENT.md](../ko/DEPLOYMENT.md)
+
 This project deploys via a GitHub Actions **self-hosted runner** registered
 on an on-premises server (Rocky Linux). The runner polls GitHub for push
 events, so no inbound port needs to be open on the deployment server.
