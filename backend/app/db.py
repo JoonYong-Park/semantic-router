@@ -30,6 +30,22 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # 로그인이 붙기 전까지 쓰는 고정 사용자를 시드한다(이미 있으면 건너뜀). 기존
+    # 데이터의 user_id가 이 id라서 users에 이 행이 있어야 FK가 성립한다.
+    from sqlalchemy.dialects.postgresql import insert
+
+    async with SessionLocal() as session:
+        await session.execute(
+            insert(db_models.User)
+            .values(
+                id=db_models.DEMO_USER_ID,
+                email=db_models.DEMO_USER_EMAIL,
+                name=db_models.DEMO_USER_NAME,
+            )
+            .on_conflict_do_nothing()
+        )
+        await session.commit()
+
 
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with SessionLocal() as session:

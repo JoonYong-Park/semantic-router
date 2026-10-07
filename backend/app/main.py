@@ -21,6 +21,7 @@ from app.schemas import ChatRequest, ChatResponse
 from app.search import router as search_router
 from app.settings import router as settings_router
 from app.usage import router as usage_router
+from app.users import router as users_router
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -73,6 +74,7 @@ app.include_router(memory_router)
 app.include_router(usage_router)
 app.include_router(search_router)
 app.include_router(projects_router)
+app.include_router(users_router)
 
 
 def _auto_mode_ready() -> bool:

@@ -84,6 +84,24 @@ class MessageCreate(BaseModel):
     attachment_ids: list[UUID] = []
 
 
+# --- 사용자 ---
+
+
+class UserUpdate(BaseModel):
+    # 이메일은 변경 불가라 일부러 필드를 두지 않는다(보내도 무시됨).
+    name: str = Field(min_length=1, max_length=100)
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    email: str
+    name: str
+    role: str
+    avatar_updated_at: datetime | None = None
+
+
 # --- 개인 지침(personal instruction) 설정용 ---
 
 

@@ -145,7 +145,9 @@ async def get_memory_overview(
     # 조회하고 각 프로젝트별로 메모리를 채워 넣는다(outer join 대신 이 방식을
     # 쓴 이유: 다른 모델들과 마찬가지로 이 프로젝트는 ORM relationship을
     # 안 쓰는 컨벤션이라 - conversations.py의 attachments 처리와 동일한 패턴).
-    projects_result = await session.execute(select(Project).order_by(Project.created_at))
+    projects_result = await session.execute(
+        select(Project).where(Project.user_id == DEMO_USER_ID).order_by(Project.created_at)
+    )
     projects = list(projects_result.scalars().all())
 
     memory_result = await session.execute(

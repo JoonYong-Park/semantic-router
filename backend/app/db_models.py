@@ -19,9 +19,51 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 
-# 로그인 기능이 없는 데모라, 모든 대화방을 이 고정 사용자 하나에 귀속시킨다.
-# (진짜 로그인을 붙일 때 이 상수 자리만 실제 사용자 id로 바꾸면 됨)
+# 로그인 기능이 없는 단계라, 모든 데이터를 이 고정 사용자 하나에 귀속시킨다.
+# 이 id의 행이 users 테이블에 시드로 들어가 있어서(db.init_db) 기존 데이터의
+# user_id를 바꾸지 않고 FK만 걸 수 있었다. 진짜 로그인을 붙일 때는 이 상수를
+# 쓰는 곳들을 "현재 로그인한 사용자"로 바꾸면 된다.
 DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+DEMO_USER_NAME = "장영실"
+DEMO_USER_EMAIL = "youngsil@joon.com"
+
+
+class User(Base):
+    """사용자. 지금은 시드된 고정 사용자 한 명뿐이고 로그인은 아직 없다.
+    인증 방식(사내 SSO인지 자체 비밀번호인지)이 정해지면 그에 맞는 컬럼을
+    추가한다(password_hash / sso_subject 등) - 지금은 일부러 넣지 않았다.
+    이 사용자의 채팅/프로젝트/메모리/설정은 전부 user_id FK(ON DELETE CASCADE)로
+    묶여 있다. 사용자를 실제로 지우면 DB 행은 같이 지워지지만 업로드 파일은
+    디스크에 남으므로, 사람을 내보낼 땐 is_active=False로 비활성화하는 쪽을 쓴다."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # "user" | "admin" - 네이티브 enum이 아니라 문자열로 두고 API 경계에서 검증한다
+    # (프로젝트 컨벤션).
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # 프로필 사진을 마지막으로 올린 시각. NULL이면 사진 없음(이름 첫 글자 아이콘).
+    # 파일은 uploads/users/{id}/avatar.png 한 장뿐이고, 이 값은 프론트가 URL에
+    # 붙여 브라우저 캐시를 갱신하는 용도로도 쓴다.
+    avatar_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # 대소문자만 다른 이메일("A@x.com" / "a@x.com")이 중복 가입되지 않게 소문자
+    # 기준으로 유일하게 둔다.
+    __table_args__ = (Index("ux_users_email_lower", func.lower(email), unique=True),)
 
 
 class Project(Base):
@@ -32,6 +74,14 @@ class Project(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    # 프로젝트 소유자 - 예전엔 소유자 컬럼이 없어서 로그인이 생기면 모든 사용자가
+    # 모든 프로젝트를 보게 되는 구조였다. 프로젝트의 참고자료/메모리/소속 채팅은
+    # 이 소유자를 따라간다(조회할 때 projects를 거쳐 확인).
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -55,6 +105,8 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    __table_args__ = (Index("ix_projects_user_id", "user_id"),)
 
 
 class ProjectFile(Base):
@@ -127,7 +179,11 @@ class Conversation(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     title: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # 사이드바 채팅 목록 맨 위에 고정할지 - 목록 정렬(list_conversations)이
     # pinned를 최우선 기준으로 쓴다.
@@ -209,7 +265,10 @@ class UserSettings(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False, unique=True
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
     )
     personal_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
     imported_memory: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -293,7 +352,11 @@ class UserMemory(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     category: Mapped[str] = mapped_column(String(20), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)

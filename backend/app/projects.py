@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import attachments as attachments_module
 from app import memory as memory_module
 from app.db import SessionLocal, get_session
-from app.db_models import Conversation, Project, ProjectFile
+from app.db_models import DEMO_USER_ID, Conversation, Project, ProjectFile
 from app.schemas import (
     ProjectCreate,
     ProjectFileOut,
@@ -84,11 +84,21 @@ async def _process_project_file_background(
         await session.commit()
 
 
+async def _get_owned_project(session: AsyncSession, project_id: uuid.UUID) -> Project:
+    """현재 사용자의 프로젝트만 돌려준다. 없거나 남의 프로젝트면 똑같이 404 -
+    남의 프로젝트 id가 존재한다는 사실도 드러내지 않기 위함. 프로젝트를 id로
+    다루는 모든 엔드포인트(참고자료/메모리 포함)가 이 함수를 거친다."""
+    project = await session.get(Project, project_id)
+    if project is None or project.user_id != DEMO_USER_ID:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    return project
+
+
 @router.post("", response_model=ProjectOut)
 async def create_project(
     body: ProjectCreate, session: AsyncSession = Depends(get_session)
 ) -> Project:
-    project = Project(name=body.name, instruction=body.instruction)
+    project = Project(user_id=DEMO_USER_ID, name=body.name, instruction=body.instruction)
     session.add(project)
     await session.commit()
     await session.refresh(project)
@@ -97,7 +107,9 @@ async def create_project(
 
 @router.get("", response_model=list[ProjectOut])
 async def list_projects(session: AsyncSession = Depends(get_session)) -> list[Project]:
-    result = await session.execute(select(Project).order_by(Project.created_at))
+    result = await session.execute(
+        select(Project).where(Project.user_id == DEMO_USER_ID).order_by(Project.created_at)
+    )
     return list(result.scalars().all())
 
 
@@ -105,9 +117,7 @@ async def list_projects(session: AsyncSession = Depends(get_session)) -> list[Pr
 async def get_project(
     project_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> Project:
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    project = await _get_owned_project(session, project_id)
     return project
 
 
@@ -117,9 +127,7 @@ async def update_project(
     body: ProjectUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> Project:
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    project = await _get_owned_project(session, project_id)
     updates = body.model_dump(exclude_unset=True)
     for key, value in updates.items():
         setattr(project, key, value)
@@ -132,9 +140,7 @@ async def update_project(
 async def delete_project(
     project_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> None:
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    project = await _get_owned_project(session, project_id)
 
     # 프로젝트를 지우면 지침(Project 행 자체)/참고자료(project_files)/메모리
     # (project_memory)뿐 아니라 소속 채팅방까지 전부 지워진다 - conversations.
@@ -161,9 +167,7 @@ async def upload_project_file(
     file: UploadFile,
     session: AsyncSession = Depends(get_session),
 ) -> ProjectFile:
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    project = await _get_owned_project(session, project_id)
 
     ext = attachments_module._ext_of(file.filename or "")
     if ext not in attachments_module.ALL_ALLOWED_EXTS:
@@ -231,9 +235,7 @@ async def upload_project_file(
 async def list_project_files(
     project_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> ProjectFilesOut:
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    project = await _get_owned_project(session, project_id)
 
     result = await session.execute(
         select(ProjectFile)
@@ -261,6 +263,7 @@ async def delete_project_file(
     file_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> None:
+    await _get_owned_project(session, project_id)
     project_file = await session.get(ProjectFile, file_id)
     if project_file is None or project_file.project_id != project_id:
         raise HTTPException(status_code=404, detail="참고자료를 찾을 수 없습니다.")
@@ -289,6 +292,7 @@ async def delete_project_file(
 async def _get_project_file_or_404(
     project_id: uuid.UUID, file_id: uuid.UUID, session: AsyncSession
 ) -> ProjectFile:
+    await _get_owned_project(session, project_id)
     project_file = await session.get(ProjectFile, file_id)
     if project_file is None or project_file.project_id != project_id:
         raise HTTPException(status_code=404, detail="참고자료를 찾을 수 없습니다.")
@@ -427,9 +431,7 @@ async def get_project_file_preview_pdf(
 async def extract_project_memory(
     project_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict:
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    project = await _get_owned_project(session, project_id)
 
     result = await session.execute(
         select(Conversation.id).where(Conversation.project_id == project_id)

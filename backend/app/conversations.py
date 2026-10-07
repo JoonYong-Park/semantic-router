@@ -171,7 +171,8 @@ async def update_conversation_project(
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
     if body.project_id is not None:
         project = await session.get(Project, body.project_id)
-        if project is None:
+        # 다른 사용자의 프로젝트에는 편입할 수 없다(없는 것과 똑같이 404)
+        if project is None or project.user_id != conv.user_id:
             raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
     conv.project_id = body.project_id
     await session.commit()
