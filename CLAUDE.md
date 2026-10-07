@@ -45,6 +45,51 @@ ALTER TABLE attachments ADD COLUMN IF NOT EXISTS generation_meta TEXT NULL;
 CREATE INDEX IF NOT EXISTS ix_attachments_message_source ON attachments (message_id, source);
 ```
 
+**`users` table** (added before login exists). A server that predates it needs this, **run before deploying the new code** (the code writes `projects.user_id`, which doesn't exist on the old schema). It aborts without changing anything if any `user_id` other than the fixed demo user exists:
+
+```sql
+BEGIN;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM conversations  WHERE user_id <> '00000000-0000-0000-0000-000000000001')
+  OR EXISTS (SELECT 1 FROM user_memory    WHERE user_id <> '00000000-0000-0000-0000-000000000001')
+  OR EXISTS (SELECT 1 FROM user_settings  WHERE user_id <> '00000000-0000-0000-0000-000000000001') THEN
+    RAISE EXCEPTION '고정 사용자 외의 user_id가 있습니다 - 확인 후 진행하세요';
+  END IF;
+END $$;
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY, email VARCHAR(255) NOT NULL, name VARCHAR(100) NOT NULL,
+  role VARCHAR(20) NOT NULL DEFAULT 'user', is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email_lower ON users (lower(email));
+INSERT INTO users (id, email, name)
+VALUES ('00000000-0000-0000-0000-000000000001', 'youngsil@joon.com', '장영실') ON CONFLICT DO NOTHING;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS user_id UUID;
+UPDATE projects SET user_id = '00000000-0000-0000-0000-000000000001' WHERE user_id IS NULL;
+ALTER TABLE projects ALTER COLUMN user_id SET NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_projects_user_id ON projects (user_id);
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['projects', 'conversations', 'user_memory', 'user_settings'] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = t || '_user_id_fkey') THEN
+      EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE',
+                     t, t || '_user_id_fkey');
+    END IF;
+  END LOOP;
+END $$;
+COMMIT;
+```
+
+`users.avatar_updated_at` (profile photo; NULL = no photo) was added after the users table. A server that has the users table but not this column needs:
+
+```sql
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_updated_at TIMESTAMPTZ NULL;
+```
+
+The photo itself is one re-encoded 256x256 PNG at `uploads/users/{id}/avatar.png` (`PUT/GET/DELETE /users/me/avatar`).
+
 ## Feature boundaries: don't let one feature's fix break another
 
 There is no test suite, so a cross-feature regression only surfaces when a real user hits it after deploy. The app looks like separate features (routing, memory, attachments, projects, streaming), but the backend is a flat module layout and several of them run through the **same shared code**. Before finishing any change, explicitly check whether it touches something another feature also depends on.
@@ -293,7 +338,15 @@ To add a tool:
 ## Backend conventions
 
 - **No SQLAlchemy `relationship()`** anywhere. Use explicit `select()`/joins and assemble results by hand, which avoids async lazy-load `MissingGreenlet` errors.
-- There is no auth. Everything is scoped to the constant `DEMO_USER_ID` in `db_models.py`.
+- **There is no login yet, but there is a `users` table.**
+  - `init_db()` seeds one fixed user (`DEMO_USER_ID`, 장영실 / youngsil@joon.com). Existing data already used that id, so nothing was rewritten.
+  - The frontend reads the current user from `GET /users/me` (sidebar user button, 계정 설정 tab). The sidebar 로그아웃 button is a deliberate no-op until login exists.
+  - The seed's `ON CONFLICT DO NOTHING` does not update an existing row. If the server DB still has the old email, run: `UPDATE users SET email = 'youngsil@joon.com' WHERE id = '00000000-0000-0000-0000-000000000001';`
+  - Code still uses the `DEMO_USER_ID` constant as "the current user". When login is added, replace those usages with the logged-in user.
+  - `conversations`, `projects`, `user_memory`, and `user_settings` have a `user_id` FK to `users` with `ON DELETE CASCADE`. `projects.user_id` is the newest, and project child tables (`project_files`, `project_memory`) get their owner through the project.
+  - Deleting a user cascades in the DB but leaves uploaded files on disk, so deactivate with `is_active=false` instead.
+  - Every project endpoint goes through `projects._get_owned_project`, which returns 404 for another user's project. Assigning a chat to a project also requires the same owner.
+  - **Still unscoped by owner** (fine with one user, must be fixed with login): by-id endpoints for conversations, attachments, and memory topics (`settings.py`), the memory scheduler, and usage stats.
 - Enum-like fields are plain `String` columns validated with Pydantic `Literal[...]` at the API boundary, never native Postgres enums.
 - Structured data is stored as JSON text in `Text` columns (e.g. `Attachment.extracted_text`, memory `details`).
 - Use `asyncio.create_task` for background work. There is no Celery or Redis.

@@ -181,6 +181,20 @@ export interface ProjectFilesOut {
   percent: number;
 }
 
+// --- 사용자 ---
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  avatar_updated_at: string | null; // 프로필 사진 없으면 null
+}
+
+export interface UserUpdateBody {
+  name: string;
+}
+
 // --- 메모리 조회(전역: 카테고리 → 토픽, 프로젝트: 토픽) ---
 
 export type MemoryCategory = "나" | "주제" | "영역" | "사람";

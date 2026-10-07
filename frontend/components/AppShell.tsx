@@ -22,13 +22,14 @@ import {
   createProject,
   deleteConversation,
   deleteProject,
+  getCurrentUser,
   listConversations,
   listProjects,
   updateConversation,
   updateConversationProject,
   updateProject,
 } from "@/lib/api";
-import { Conversation, Project } from "@/lib/types";
+import { Conversation, Project, User } from "@/lib/types";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -36,6 +37,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  // 로그인한 사용자(지금은 시드된 고정 사용자) - 사이드바 사용자 메뉴와 계정 설정에 쓴다.
+  const [user, setUser] = useState<User | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // "채팅 검색"은 설정과 무관한 별도 사이드바 버튼이라 자기 state를 따로 둔다.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -68,6 +71,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     listProjects()
       .then(setProjects)
       .catch(() => setProjects([]));
+
+    getCurrentUser()
+      .then(setUser)
+      .catch(() => setUser(null));
 
     try {
       setSidebarCollapsed(localStorage.getItem("sidebarCollapsed") === "1");
@@ -318,7 +325,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           onSelect={(id) => router.push(`/c/${id}`)}
           onNew={handleNewChat}
           onDelete={handleDeleteConversation}
+          user={user}
           onOpenSettings={() => setSettingsWindow({ tab: "personal" })}
+          onOpenAccount={() => setSettingsWindow({ tab: "account" })}
           onOpenSearch={() => setSearchOpen(true)}
           projects={projects}
           onOpenProject={(id) => router.push(`/projects/${id}`)}
@@ -346,6 +355,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <SettingsWindow
             initialTab={settingsWindow.tab}
             initialMemoryProjectId={settingsWindow.memoryProjectId}
+            user={user}
+            onUserChange={setUser}
             onClose={() => setSettingsWindow(null)}
           />
         )}

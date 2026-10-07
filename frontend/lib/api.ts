@@ -17,6 +17,8 @@ import {
   UsagePeriod,
   UsageQuota,
   UsageStats,
+  User,
+  UserUpdateBody,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -156,6 +158,50 @@ export async function importMemory(text: string): Promise<Settings> {
 export async function deleteImportedMemory(): Promise<{ imported_memory: string | null }> {
   const res = await fetch(`${API_URL}/settings/import`, { method: "DELETE" });
   if (!res.ok) throw new Error(`가져온 정보를 삭제하지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+// --- 사용자 ---
+
+export async function updateCurrentUser(body: UserUpdateBody): Promise<User> {
+  const res = await fetch(`${API_URL}/users/me`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`이름을 저장하지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+// 프로필 사진 URL. avatar_updated_at을 쿼리에 붙여 사진이 바뀌면 캐시도 갱신되게 한다.
+export function getAvatarUrl(user: User | null): string | null {
+  if (!user?.avatar_updated_at) return null;
+  return `${API_URL}/users/me/avatar?v=${encodeURIComponent(user.avatar_updated_at)}`;
+}
+
+export async function uploadAvatar(file: File): Promise<User> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_URL}/users/me/avatar`, { method: "PUT", body: form });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.json()).detail ?? "";
+    } catch {}
+    throw new Error(typeof detail === "string" && detail ? detail : `사진을 올리지 못했습니다 (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+export async function deleteAvatar(): Promise<User> {
+  const res = await fetch(`${API_URL}/users/me/avatar`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`사진을 삭제하지 못했습니다 (HTTP ${res.status})`);
+  return res.json();
+}
+
+export async function getCurrentUser(): Promise<User> {
+  const res = await fetch(`${API_URL}/users/me`);
+  if (!res.ok) throw new Error(`사용자 정보를 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 

@@ -8,7 +8,8 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { Conversation, Project, ProjectColor } from "@/lib/types";
+import { Conversation, Project, ProjectColor, User } from "@/lib/types";
+import UserAvatar from "@/components/UserAvatar";
 
 // 마우스로 드래그해서 조절할 수 있는 사이드바 폭의 하한/상한, 그리고
 // 펼쳐졌을 때 기본값(예전에 고정값이던 260px를 그대로 기본값으로 둠).
@@ -76,6 +77,29 @@ function SearchIcon() {
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function UserIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
+      <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="2" />
+      <path d="M4 21a8 8 0 0116 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function LogOutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
+      <path
+        d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -316,7 +340,9 @@ export default function Sidebar({
   onSelect,
   onNew,
   onDelete,
+  user,
   onOpenSettings,
+  onOpenAccount,
   onOpenSearch,
   projects,
   onOpenProject,
@@ -338,9 +364,14 @@ export default function Sidebar({
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  // 로그인한 사용자 - 맨 아래 사용자 버튼의 이름/아이콘(첫 글자)과 메뉴 헤더에 쓴다.
+  // 아직 못 불러왔으면 null.
+  user: User | null;
   // 개인 지침/가져오기/토큰 사용량/메모리/화면(다크모드)을 탭으로 묶은
   // 설정 창을 연다(기본 탭은 호출하는 쪽에서 정함).
   onOpenSettings: () => void;
+  // 같은 설정 창을 계정 탭으로 연다.
+  onOpenAccount: () => void;
   onOpenSearch: () => void;
   projects: Project[];
   onOpenProject: (id: string) => void;
@@ -483,6 +514,43 @@ export default function Sidebar({
     const conversationId = e.dataTransfer.getData(CONVERSATION_DRAG_TYPE);
     if (conversationId) onMoveConversationToProject(conversationId, null);
   }
+
+  // 맨 아래 사용자 버튼의 메뉴(설정/계정 설정/로그아웃) - 채팅 옵션 메뉴와 같은
+  // 방식(document.body 포탈 + 트리거 위치로 좌표 계산)인데, 버튼이 화면 맨
+  // 아래라서 위쪽으로 펼친다(bottom 기준).
+  const [userMenuPos, setUserMenuPos] = useState<{ left: number; bottom: number } | null>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!userMenuPos) return;
+    function onMouseDown(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (userMenuRef.current?.contains(target)) return;
+      // 트리거를 다시 누른 건 토글로 처리(바깥 클릭으로 닫힌 직후 다시 열리는 것 방지)
+      if (target.closest("[data-user-menu-trigger]")) return;
+      setUserMenuPos(null);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setUserMenuPos(null);
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [userMenuPos]);
+
+  function handleToggleUserMenu(triggerEl: HTMLElement) {
+    if (userMenuPos) {
+      setUserMenuPos(null);
+      return;
+    }
+    const rect = triggerEl.getBoundingClientRect();
+    setUserMenuPos({ left: rect.left, bottom: window.innerHeight - rect.top + 6 });
+  }
+
+  const userName = user?.name ?? "사용자";
 
   // 채팅 항목의 "⋮" 옵션 메뉴(고정/이름 변경) - 설정 메뉴와 동일하게
   // document.body에 포탈로 띄우고 트리거 버튼의 위치로 좌표만 계산한다.
@@ -1044,19 +1112,76 @@ export default function Sidebar({
       <div className="flex flex-col gap-1 border-t border-gray-200 px-2 py-2 dark:border-gray-800">
         <button
           type="button"
-          onClick={onOpenSettings}
-          title="설정"
-          aria-label="설정"
+          data-user-menu-trigger
+          onClick={(e) => handleToggleUserMenu(e.currentTarget)}
+          title={userName}
+          aria-label={`${userName} 메뉴`}
+          aria-haspopup="menu"
+          aria-expanded={userMenuPos !== null}
           className={`flex h-9 shrink-0 items-center gap-2 rounded-lg text-sm text-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800 ${
             collapsed ? "w-9" : "w-full"
           }`}
         >
           <span className="flex h-9 w-9 shrink-0 items-center justify-center">
-            <SettingsIcon />
+            <UserAvatar user={user} />
           </span>
-          {showFull && "설정"}
+          {showFull && <span className="truncate">{userName}</span>}
         </button>
       </div>
+
+      {userMenuPos &&
+        createPortal(
+          <div
+            ref={userMenuRef}
+            role="menu"
+            style={{ position: "fixed", left: userMenuPos.left, bottom: userMenuPos.bottom }}
+            className="z-50 w-56 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800"
+          >
+            <div className="border-b border-gray-100 px-3 py-2 dark:border-gray-700">
+              <p className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">{userName}</p>
+              {user?.email && (
+                <p className="truncate text-xs text-gray-500 dark:text-gray-400">{user.email}</p>
+              )}
+            </div>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setUserMenuPos(null);
+                onOpenSettings();
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+              <SettingsIcon />
+              설정
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setUserMenuPos(null);
+                onOpenAccount();
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+              <UserIcon />
+              계정 설정
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                // 로그인 기능이 아직 없어서 일부러 아무 동작도 하지 않는다.
+                // 로그인이 붙으면 여기서 로그아웃(세션/토큰 삭제 후 로그인 화면 이동)을 처리한다.
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+              <LogOutIcon />
+              로그아웃
+            </button>
+          </div>,
+          document.body
+        )}
 
       {convMenuId &&
         convMenuPos &&

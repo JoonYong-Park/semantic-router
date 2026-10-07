@@ -5,10 +5,13 @@
 // 이 컴포넌트가 그 네 개(+다크모드 토글)를 "설정"이라는 창 하나 안의 탭으로
 // 통합한다 - 왼쪽에 탭 목록, 오른쪽에 선택된 탭의 내용. 오버레이 클릭/Escape로
 // 닫는 것도 여기 하나에서만 처리하고, 개별 탭은 더 이상 자기 창을 안 가진다.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   deleteImportedMemory,
+  deleteAvatar,
   deleteInstruction,
+  updateCurrentUser,
+  uploadAvatar,
   deleteMemoryFact,
   getMemoryOverview,
   getSettings,
@@ -18,6 +21,7 @@ import {
   updateMemoryTopic,
   updateSettings,
 } from "@/lib/api";
+import UserAvatar from "@/components/UserAvatar";
 import { formatHoverTime, formatMonthDay } from "@/lib/dateFormat";
 import {
   MemoryCategory,
@@ -26,10 +30,11 @@ import {
   UsagePeriod,
   UsageQuota,
   UsageStats,
+  User,
 } from "@/lib/types";
 import UsageChart from "./UsageChart";
 
-export type SettingsTab = "personal" | "import" | "usage" | "memory" | "appearance";
+export type SettingsTab = "account" | "personal" | "import" | "usage" | "memory" | "appearance";
 
 function CloseIcon() {
   return (
@@ -161,7 +166,17 @@ function TrashIcon() {
   );
 }
 
+function UserIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
+      <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="2" />
+      <path d="M4 21a8 8 0 0116 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 const TABS: { id: SettingsTab; label: string; icon: () => JSX.Element }[] = [
+  { id: "account", label: "계정 설정", icon: UserIcon },
   { id: "personal", label: "개인 지침", icon: FileTextIcon },
   { id: "import", label: "다른 AI에서 가져오기", icon: ArrowDownToLineIcon },
   { id: "usage", label: "토큰 사용량", icon: BarChartIcon },
@@ -174,6 +189,166 @@ const PERSONAL_PLACEHOLDER = `예시:
 전문 용어는 풀어서 설명해주세요.
 답변은 짧고 핵심만 알려주세요.
 표나 번호 목록 형식을 선호합니다.`;
+
+// 계정 정보 - 이름은 수정할 수 있고, 이메일은 계정 식별자라 변경할 수 없다(읽기 전용 표시).
+function AccountPanel({
+  user,
+  onUserChange,
+}: {
+  user: User | null;
+  onUserChange: (user: User) => void;
+}) {
+  const [name, setName] = useState(user?.name ?? "");
+  const [saving, setSaving] = useState(false);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function showFlash(message: string) {
+    setFlash(message);
+    setTimeout(() => setFlash(null), 2500);
+  }
+
+  async function handleAvatarFile(file: File | undefined) {
+    if (!file) return;
+    setAvatarBusy(true);
+    try {
+      onUserChange(await uploadAvatar(file));
+    } catch (e) {
+      showFlash(e instanceof Error ? e.message : "사진을 올리지 못했습니다.");
+    } finally {
+      setAvatarBusy(false);
+      // 같은 파일을 다시 골라도 change가 발생하도록 비운다.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleAvatarDelete() {
+    setAvatarBusy(true);
+    try {
+      onUserChange(await deleteAvatar());
+    } catch {
+      showFlash("사진을 삭제하지 못했습니다.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  // 사용자 정보가 탭이 열린 뒤에 도착하는 경우(첫 로딩)에도 입력칸에 채운다.
+  useEffect(() => {
+    setName(user?.name ?? "");
+  }, [user?.name]);
+
+  const trimmed = name.trim();
+  const changed = user !== null && trimmed !== "" && trimmed !== user.name;
+
+  async function handleSave() {
+    if (!changed) return;
+    setSaving(true);
+    try {
+      onUserChange(await updateCurrentUser({ name: trimmed }));
+      showFlash("저장됨");
+    } catch {
+      showFlash("저장 실패");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100">계정 설정</h3>
+      <div className="flex max-w-md flex-col gap-4">
+        <div className="flex items-center gap-4">
+          <UserAvatar user={user} size="h-16 w-16" textSize="text-2xl" />
+          <div className="flex flex-col items-start gap-1">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={user === null || avatarBusy}
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+              >
+                {avatarBusy ? "처리 중..." : "사진 변경"}
+              </button>
+              {user?.avatar_updated_at && (
+                <button
+                  type="button"
+                  onClick={handleAvatarDelete}
+                  disabled={avatarBusy}
+                  className="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-400 dark:hover:bg-gray-800"
+                >
+                  삭제
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-gray-400 dark:text-gray-500">PNG, JPG, WEBP 등 · 최대 5MB</p>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => handleAvatarFile(e.target.files?.[0])}
+          />
+        </div>
+        <div>
+          <label htmlFor="account-name" className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+            이름
+          </label>
+          <input
+            id="account-name"
+            type="text"
+            value={name}
+            maxLength={100}
+            disabled={user === null || saving}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSave();
+            }}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-gray-400 disabled:opacity-60 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+          />
+        </div>
+        <div>
+          <label htmlFor="account-email" className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+            이메일
+          </label>
+          <div className="relative">
+            <input
+              id="account-email"
+              type="email"
+              value={user?.email ?? ""}
+              readOnly
+              disabled
+              title="이메일은 변경할 수 없습니다"
+              className="w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-100 px-3 py-2 pr-9 text-sm text-gray-500 dark:border-gray-800 dark:bg-gray-800/60 dark:text-gray-400"
+            />
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-gray-500"
+            >
+              <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
+              <path d="M8 11V8a4 4 0 118 0v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </div>
+          <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">이메일은 변경할 수 없습니다.</p>
+        </div>
+      </div>
+      <div className="mt-4 flex max-w-md items-center justify-end gap-2">
+        {flash && <span className="text-xs text-gray-400 dark:text-gray-500">{flash}</span>}
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={!changed || saving}
+          className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-white dark:text-gray-900"
+        >
+          저장
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function PersonalInstructionPanel() {
   const [instruction, setInstruction] = useState("");
@@ -977,10 +1152,14 @@ function AppearancePanel() {
 export default function SettingsWindow({
   initialTab = "personal",
   initialMemoryProjectId = null,
+  user = null,
+  onUserChange,
   onClose,
 }: {
   initialTab?: SettingsTab;
   initialMemoryProjectId?: string | null;
+  user?: User | null;
+  onUserChange: (user: User) => void;
   onClose: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
@@ -1034,6 +1213,7 @@ export default function SettingsWindow({
             <CloseIcon />
           </button>
 
+          {activeTab === "account" && <AccountPanel user={user} onUserChange={onUserChange} />}
           {activeTab === "personal" && <PersonalInstructionPanel />}
           {activeTab === "import" && <ImportMemoryPanel />}
           {activeTab === "usage" && <UsagePanel />}
