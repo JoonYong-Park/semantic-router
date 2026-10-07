@@ -118,13 +118,23 @@ System-prompt context is injected in a fixed precedence order: personal instruct
 - `events`, SSE events sent after the tool finishes;
 - `metadata`, values for the loop that the model never sees.
 
-Registered tools: `web_search` (Tavily, always sent), three document tools, `generate_image`, and `inspect_document` / `edit_document`. Search failure and zero results are both reported to the model. `get_tool_specs(include_doc_tools, include_image_tools, include_edit_tools)` decides what is sent each turn; each group has its own intent detector in `router.py`. `ToolContext.turn_state` is shared by all calls in one turn (generated-file count, image count). `run_tool` logs every `is_error` result (`툴 에러 결과`, first 200 chars), and the loop logs tool names per round (`툴 호출`), so model paraphrases of errors can be traced.
+Registered tools: `web_search` (always sent; Tavily → Perplexity → Brave fallback, see below), three document tools, `generate_image`, and `inspect_document` / `edit_document`. Search failure and zero results are both reported to the model. `get_tool_specs(include_doc_tools, include_image_tools, include_edit_tools)` decides what is sent each turn; each group has its own intent detector in `router.py`. `ToolContext.turn_state` is shared by all calls in one turn (generated-file count, image count). `run_tool` logs every `is_error` result (`툴 에러 결과`, first 200 chars), and the loop logs tool names per round (`툴 호출`), so model paraphrases of errors can be traced.
 
 To add a tool:
 1. Write an async executor that returns a `ToolResult`. Use `ctx.emit` for progress; don't raise for expected failures, return `is_error=True` instead.
 2. Create a `ToolSpec` for it and add it to `_REGISTRY` in `tools.py`.
 3. If it needs a new SSE event type, update `frontend/lib/types.ts` and the `lib/api.ts` parser in the same change.
 4. Smoke-test it on all three providers, in a normal chat and in a project chat.
+
+**Web search fallback** (`providers.search_web`, used by the `web_search` tool):
+- **Order:** Tavily → Perplexity → Brave. A provider is tried next only when the previous one raises (HTTP error, timeout, network error). A provider whose API key is missing is skipped.
+- **Zero results is not an error.** It does not trigger a fallback and is reported to the model as 0 results.
+- **Timeout:** each provider gets its own short timeout, `SEARCH_TIMEOUT` (15s, connect 5s), so a hung provider costs at most that long.
+- **Result shape:** every provider is normalized to `{title, url, content}`, so the tool's output format and source citations are unchanged. Brave's HTML tags are stripped and `extra_snippets` are appended to `content`.
+- **Filters:** `time_range` maps to Tavily `time_range`, Perplexity `search_recency_filter`, and Brave `freshness` (`pd/pw/pm/py`). `site_hint` maps to Tavily `include_domains`, Perplexity `search_domain_filter`, and a `site:` operator in the Brave query.
+- **Failure:** if every provider fails, `SearchUnavailableError` lists each provider's reason (HTTP status or "키 없음", never keys or response bodies). The tool then returns it to the model as an `is_error` result.
+- **Logs:** a fallback logs `웹 검색 실패, 다음 제공자로 폴백` and `웹 검색 폴백 성공 (provider=...)`; normal searches log `웹 검색 (provider=...)`.
+- **Keys:** `TAVILY_API_KEY`, `PERPLEXITY_API_KEY`, `BRAVE_API_KEY` in `.env` (see `.env.example`). The server's `.env` needs them too, and the backend container must be recreated to pick them up.
 
 **Document tools** (`create_document` / `create_spreadsheet` / `create_presentation` in `tools.py`, renderers in `docgen.py`):
 - **Formats:**

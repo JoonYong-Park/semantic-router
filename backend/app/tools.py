@@ -57,7 +57,7 @@ class ToolSpec:
     strict: bool = False
 
 
-# --- web_search ---
+# --- web_search (Tavily → Perplexity → Brave 폴백, providers.search_web) ---
 
 WEB_SEARCH_TOOL_NAME = "web_search"
 WEB_SEARCH_DESCRIPTION = "최신 정보, 실시간 정보, 특정 사실 확인이 필요할 때 웹을 검색한다."
@@ -115,14 +115,15 @@ async def _execute_web_search(arguments: dict, ctx: ToolContext) -> ToolResult:
     # 기록한다(예전 구조에서도 검색 결과가 0건이거나 실패해도 기록됐음).
     metadata = {"web_search_query": query}
     try:
-        results = await providers.tavily_search(
+        # Tavily가 에러면 Perplexity, 그것도 실패하면 Brave로 자동 폴백한다.
+        results, _provider = await providers.search_web(
             query,
             max_results=5,
             time_range=_normalize_time_range(arguments.get("time_range")),
             site_hint=_normalize_site_hint(arguments.get("site_hint")),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error("Tavily 검색 실패 (query=%s): %s", query, exc)
+        logger.error("웹 검색 실패 (query=%s): %s", query, exc)
         return ToolResult(
             content=f"웹 검색에 실패했습니다: {exc}. 검색 없이 답하되, 최신 정보를 확인하지 못했다는 점을 사용자에게 알려줘.",
             is_error=True,

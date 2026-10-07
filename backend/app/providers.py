@@ -1,9 +1,11 @@
 """Provider API 호출 (OpenAI / Gemini OpenAI-compat / Anthropic)."""
 
 import base64
+import html
 import json
 import logging
 import os
+import re
 from typing import AsyncIterator
 
 import httpx
@@ -17,6 +19,8 @@ API_KEYS = {
     "google": os.environ.get("GEMINI_API_KEY", ""),
     "anthropic": os.environ.get("ANTHROPIC_API_KEY", ""),
     "tavily": os.environ.get("TAVILY_API_KEY", ""),
+    "perplexity": os.environ.get("PERPLEXITY_API_KEY", ""),
+    "brave": os.environ.get("BRAVE_API_KEY", ""),
 }
 
 KEY_ENV_NAMES = {
@@ -24,17 +28,24 @@ KEY_ENV_NAMES = {
     "google": "GEMINI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "tavily": "TAVILY_API_KEY",
+    "perplexity": "PERPLEXITY_API_KEY",
+    "brave": "BRAVE_API_KEY",
 }
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 GOOGLE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 TAVILY_URL = "https://api.tavily.com/search"
+PERPLEXITY_URL = "https://api.perplexity.ai/search"
+BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 
 MAX_OUTPUT_TOKENS = 2048
 REQUEST_TIMEOUT = httpx.Timeout(120.0)
 # 스트리밍은 청크 사이 대기 시간이 길어질 수 있어 read 타임아웃을 넉넉히 둔다.
 STREAM_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
+# 웹 검색은 Tavily → Perplexity → Brave 폴백 체인이라, 한 곳이 응답 없이 멈춰
+# 있어도 다음으로 빨리 넘어가도록 짧게 둔다(최악의 경우 3곳 × 15초).
+SEARCH_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 # site_hint별로 검색을 좁힐 신뢰 도메인. 날씨는 일반 키워드 검색에서 태풍/정치
 # 뉴스나 확률 계산기 스팸 사이트가 섞여 들어오는 걸 실제로 확인해서 추가함.
@@ -650,7 +661,7 @@ async def tavily_search(
         payload["include_domains"] = domains
         payload["include_domains_mode"] = "filter"
 
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
         resp = await client.post(
             TAVILY_URL,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -659,6 +670,141 @@ async def tavily_search(
         _raise_for_status_logged(resp)
         data = resp.json()
         return data.get("results", [])
+
+
+async def perplexity_search(
+    query: str,
+    max_results: int = 5,
+    time_range: str | None = None,
+    site_hint: str | None = None,
+) -> list[dict]:
+    """Perplexity Search API로 웹 검색(Tavily 실패 시 2순위). 실패하면 예외를
+    그대로 올린다. time_range는 search_recency_filter, site_hint는
+    search_domain_filter(허용 도메인 목록)로 넘긴다. 결과는 Tavily와 같은
+    {title, url, content} 모양으로 맞춘다(content = snippet)."""
+    api_key = API_KEYS.get("perplexity", "")
+    if not api_key:
+        raise RuntimeError("PERPLEXITY_API_KEY가 설정되지 않았습니다.")
+
+    payload: dict = {"query": query, "max_results": max_results}
+    if time_range:
+        payload["search_recency_filter"] = time_range
+    domains = SITE_HINT_DOMAINS.get(site_hint or "")
+    if domains:
+        payload["search_domain_filter"] = domains
+
+    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
+        resp = await client.post(
+            PERPLEXITY_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=payload,
+        )
+        _raise_for_status_logged(resp)
+        return [
+            {"title": r.get("title") or "", "url": r.get("url") or "", "content": r.get("snippet") or ""}
+            for r in resp.json().get("results", [])
+        ]
+
+
+_BRAVE_FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
+
+
+def _plain_text(value: str) -> str:
+    """Brave 결과의 description에는 <strong> 같은 HTML 태그/엔티티가 섞여 있다."""
+    return html.unescape(re.sub(r"<[^>]+>", "", value or "")).strip()
+
+
+async def brave_search(
+    query: str,
+    max_results: int = 5,
+    time_range: str | None = None,
+    site_hint: str | None = None,
+) -> list[dict]:
+    """Brave Web Search API로 웹 검색(Perplexity까지 실패했을 때 3순위). 실패하면
+    예외를 그대로 올린다. time_range는 freshness(pd/pw/pm/py), site_hint는 도메인
+    제한 파라미터가 따로 없어서 질의어에 site: 연산자를 붙여서 건다. 결과는
+    {title, url, content} 모양으로 맞추고, content는 description과
+    extra_snippets를 이어 붙인 평문이다."""
+    api_key = API_KEYS.get("brave", "")
+    if not api_key:
+        raise RuntimeError("BRAVE_API_KEY가 설정되지 않았습니다.")
+
+    q = query
+    domains = SITE_HINT_DOMAINS.get(site_hint or "")
+    if domains:
+        q = f"{query} ({' OR '.join(f'site:{d}' for d in domains)})"
+    params: dict = {"q": q, "count": max_results, "extra_snippets": "true"}
+    if time_range in _BRAVE_FRESHNESS:
+        params["freshness"] = _BRAVE_FRESHNESS[time_range]
+
+    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
+        resp = await client.get(
+            BRAVE_URL,
+            headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
+            params=params,
+        )
+        _raise_for_status_logged(resp)
+        results = (resp.json().get("web") or {}).get("results", [])
+    return [
+        {
+            "title": _plain_text(r.get("title", "")),
+            "url": r.get("url") or "",
+            "content": " ".join(
+                _plain_text(t) for t in [r.get("description", ""), *(r.get("extra_snippets") or [])] if t
+            ),
+        }
+        for r in results
+    ]
+
+
+class SearchUnavailableError(Exception):
+    """모든 검색 제공자가 실패했거나 키가 없을 때. 메시지에 제공자별 사유가 있다."""
+
+
+def _short_error(exc: Exception) -> str:
+    """로그/에러 메시지용 한 줄 사유(키나 응답 본문은 넣지 않는다)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "타임아웃"
+    return f"{type(exc).__name__}: {str(exc)[:80]}"
+
+
+async def search_web(
+    query: str,
+    max_results: int = 5,
+    time_range: str | None = None,
+    site_hint: str | None = None,
+) -> tuple[list[dict], str]:
+    """웹 검색 - Tavily가 에러(HTTP 오류, 타임아웃, 키 없음 등)면 Perplexity,
+    그것도 실패하면 Brave 순서로 시도한다. (결과, 실제로 쓴 제공자 이름)을 돌려준다.
+    결과 0건은 에러가 아니라 정상 응답으로 보고 폴백하지 않는다. 키가 없는
+    제공자는 건너뛰고, 전부 실패하면 SearchUnavailableError를 올린다."""
+    failures: list[str] = []
+    for name, search in _SEARCH_CHAIN:
+        if not API_KEYS.get(name):
+            failures.append(f"{name}: 키 없음")
+            continue
+        try:
+            results = await search(query, max_results, time_range, site_hint)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{name}: {_short_error(exc)}")
+            logger.warning("웹 검색 실패, 다음 제공자로 폴백 (provider=%s): %s", name, _short_error(exc))
+            continue
+        if failures:
+            logger.warning("웹 검색 폴백 성공 (provider=%s, 앞선 실패: %s)", name, "; ".join(failures))
+        else:
+            logger.info("웹 검색 (provider=%s, results=%d)", name, len(results))
+        return results, name
+    raise SearchUnavailableError("모든 검색 제공자가 실패했습니다 - " + "; ".join(failures))
+
+
+# 폴백 순서 - 앞에서부터 시도한다.
+_SEARCH_CHAIN = (
+    ("tavily", tavily_search),
+    ("perplexity", perplexity_search),
+    ("brave", brave_search),
+)
 
 
 # --- 이미지 생성 (OpenAI Images API) ---
