@@ -26,6 +26,7 @@ services:
     environment:
       FRONTEND_ORIGIN: http://localhost:3000
       DATABASE_URL: postgresql+asyncpg://asap:asap@postgres:5432/asap
+      ENABLE_DOCS: "1"
     volumes:
       - backend_hf_cache:/app/hf-cache
       - ./uploads:/app/uploads

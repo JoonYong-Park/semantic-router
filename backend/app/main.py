@@ -58,7 +58,16 @@ async def lifespan(app: FastAPI):
     memory_task.cancel()
 
 
-app = FastAPI(title="ASAP - Category/Complexity Routing", lifespan=lifespan)
+# API 문서(/docs, /redoc, /openapi.json)는 ENABLE_DOCS=1일 때만 노출 — 배포 서버는 기본 비공개
+_DOCS_ENABLED = os.environ.get("ENABLE_DOCS") == "1"
+
+app = FastAPI(
+    title="ASAP",
+    lifespan=lifespan,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _DOCS_ENABLED else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
