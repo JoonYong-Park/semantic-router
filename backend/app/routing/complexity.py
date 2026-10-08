@@ -1,4 +1,8 @@
-"""E5 임베딩 + easy/hard 예시 코사인 유사도로 0~1 복잡도 점수."""
+"""E5 임베딩 + easy/hard 예시 코사인 유사도로 0~1 복잡도 점수.
+
+질문과 가장 가까운 easy 예시 TOP_K개, hard 예시 TOP_K개의 평균 유사도 차이를
+sigmoid로 0~1에 펼친다. 예시 전체 평균을 쓰면 질문과 무관한 예시들까지 섞여
+점수가 한쪽으로 쏠렸다(60문항 평가 기준 정확도 82% → top-5 87%)."""
 
 import torch
 import torch.nn.functional as F
@@ -54,6 +58,9 @@ def is_ready() -> bool:
 # E5는 이방성이 커서 easy/hard 평균 유사도 차이가 ±0.05~0.08 수준 — sigmoid 전에 증폭
 DIFF_SCALE = 25.0
 
+# 비교에 쓰는 가장 가까운 예시 수(easy/hard 각각).
+TOP_K = 5
+
 
 def complexity_score(text: str) -> float:
     if _model is None or _easy_ref is None or _hard_ref is None:
@@ -63,6 +70,8 @@ def complexity_score(text: str) -> float:
 
     easy_sim = (query_emb @ _easy_ref.T).squeeze(0)
     hard_sim = (query_emb @ _hard_ref.T).squeeze(0)
+    easy_top = easy_sim.topk(min(TOP_K, easy_sim.numel())).values
+    hard_top = hard_sim.topk(min(TOP_K, hard_sim.numel())).values
 
-    diff = hard_sim.mean().item() - easy_sim.mean().item()
+    diff = hard_top.mean().item() - easy_top.mean().item()
     return torch.sigmoid(torch.tensor(diff * DIFF_SCALE)).item()

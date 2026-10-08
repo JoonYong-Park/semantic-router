@@ -142,7 +142,8 @@ The `lifespan` in `main.py` starts three background tasks:
 
 **Routing engine** (`routing/`, independent of HTTP):
 - `classifier.py`: category classification.
-- `complexity.py` and `complexity_examples.py`: complexity score.
+- `complexity.py` and `complexity_examples.py`: complexity score. multilingual-e5-large embeds the question; the score is `sigmoid((mean of top-5 hard similarities − mean of top-5 easy similarities) × 25)`. Size thresholds are `COMPLEXITY_SMALL_MAX` 0.4 / `COMPLEXITY_MEDIUM_MAX` 0.80 in `catalog.py`; large is deliberately conservative (only clearly hard questions).
+  - The examples target **reasoning difficulty, not topic**: EASY includes technical-term definitions ("쿠버네티스가 뭐야?"), and HARD includes everyday multi-constraint/multi-step questions, so jargon alone doesn't push a question up.
 - `selector.py`: `select_model()`, which combines the two, and `bump_size()`.
 - `intent.py`: keyword intent detectors that decide which tool groups are sent.
 - `catalog.py`: loads the 9-model catalog from `models.json` (company × size → `model_id`, `display_name`) and fails at startup if any combination is missing or duplicated. To change a model, edit `models.json` and the matching `label` in `frontend/lib/models.ts` (the label must equal `display_name`; the frontend uses it to find the size badge).
