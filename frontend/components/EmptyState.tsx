@@ -12,12 +12,9 @@ export default function EmptyState({
 }) {
   return (
     <div className="mt-16 flex flex-col items-center text-center">
-      <img src="/icons/asap.png" alt="" className="mb-3 h-12 w-auto" />
-      <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
-        All-in-one Service AI Platform for You
-      </p>
-      <p className="mt-1.5 text-base font-medium text-gray-700 dark:text-gray-200">
-        모든 업무를 하나로, AI 통합 플랫폼 ASAP
+      <img src="/icons/joomini.png" alt="" className="mb-3 h-12 w-auto" />
+      <p className="text-base font-medium text-gray-700 dark:text-gray-200">
+        모든 업무를 하나로, AI 통합 플랫폼 Joomini
       </p>
 
       <p className="mt-4 text-sm text-gray-400 dark:text-gray-500">

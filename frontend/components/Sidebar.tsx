@@ -35,13 +35,13 @@ const PROJECT_COLOR_CLASSES: Record<ProjectColor, string> = {
 // 채팅 항목을 드래그할 때 dataTransfer에 실어 보내는 커스텀 MIME 타입 -
 // 브라우저 기본 파일 드래그(예: 파일 첨부 드롭존)와 절대 안 겹치게
 // 이 앱 전용 타입으로 구분한다.
-const CONVERSATION_DRAG_TYPE = "application/x-asap-conversation-id";
+const CONVERSATION_DRAG_TYPE = "application/x-joomini-conversation-id";
 
 // "고정"/"프로젝트" 섹션 안에서 드래그로 순서만 바꿀 때 쓰는 별도 MIME 타입 -
 // 값은 "proj:<id>" 또는 "conv:<id>" 형태로 어떤 종류를 옮기는지까지 담는다.
 // CONVERSATION_DRAG_TYPE(채팅을 프로젝트에 편입/해제하는 용도)과는 별개라
 // 같은 드래그에 둘 다 실어도 서로 안 헷갈린다.
-const REORDER_DRAG_TYPE = "application/x-asap-reorder-key";
+const REORDER_DRAG_TYPE = "application/x-joomini-reorder-key";
 
 // 텍스트는 width 트랜지션(아래 duration-300, 300ms)이 다 끝나기 전, 박스가
 // 거의 다 늘어났을 즈음 미리 보여준다 (완전히 끝날 때까지 기다리면 너무 늦게
@@ -907,17 +907,17 @@ export default function Sidebar({
             aria-label="사이드바 펼치기"
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-gray-200 dark:hover:bg-gray-800"
           >
-            <img src="/icons/asap.png" alt="ASAP" className="h-8 w-8 object-contain" />
+            <img src="/icons/joomini.png" alt="Joomini" className="h-8 w-8 object-contain" />
           </button>
         ) : (
           <div className="flex h-10 w-10 shrink-0 items-center justify-center">
-            <img src="/icons/asap.png" alt="" className="h-8 w-8 object-contain" />
+            <img src="/icons/joomini.png" alt="" className="h-8 w-8 object-contain" />
           </div>
         )}
         {showFull && (
           <>
             <span className="flex-1 truncate text-lg font-semibold text-gray-900 dark:text-gray-100">
-              ASAP
+              Joomini
             </span>
             <button
               type="button"

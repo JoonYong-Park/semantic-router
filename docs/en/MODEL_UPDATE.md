@@ -2,7 +2,7 @@
 
 > 한국어: [../ko/MODEL_UPDATE.md](../ko/MODEL_UPDATE.md)
 
-ASAP routes every message to one of 9 chat models: 3 companies (OpenAI, Google, Anthropic) × 3 sizes (small, medium, large). When a vendor ships a newer model, this guide covers what to edit, what to test, and the vendor quirks that have broken past swaps.
+Joomini routes every message to one of 9 chat models: 3 companies (OpenAI, Google, Anthropic) × 3 sizes (small, medium, large). When a vendor ships a newer model, this guide covers what to edit, what to test, and the vendor quirks that have broken past swaps.
 
 ## What to edit
 

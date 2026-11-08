@@ -2,7 +2,7 @@
 
 > English: [../en/MODEL_UPDATE.md](../en/MODEL_UPDATE.md)
 
-ASAP는 메시지마다 9개 채팅 모델 중 하나로 보냅니다. 모델은 3개 회사(OpenAI, Google, Anthropic) × 3개 크기(small, medium, large)입니다. 새 모델이 나와서 교체할 때 무엇을 고치고 무엇을 테스트해야 하는지, 그리고 지난번 교체 때 실제로 문제를 일으킨 회사별 특이사항을 정리했습니다.
+Joomini는 메시지마다 9개 채팅 모델 중 하나로 보냅니다. 모델은 3개 회사(OpenAI, Google, Anthropic) × 3개 크기(small, medium, large)입니다. 새 모델이 나와서 교체할 때 무엇을 고치고 무엇을 테스트해야 하는지, 그리고 지난번 교체 때 실제로 문제를 일으킨 회사별 특이사항을 정리했습니다.
 
 ## 수정할 곳
 

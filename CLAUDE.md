@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-ASAP: a chat app (FastAPI + Next.js 14 App Router + Postgres) that routes each question to one of 9 LLMs (OpenAI / Google / Anthropic × small / medium / large). In `auto` mode, an mmBERT classifier picks the **company** from the question's category, and E5-embedding similarity picks the **size** from a complexity score. Manual mode lets the user pick company and size directly. See README.md for the feature list, the memory mechanisms, and per-format attachment handling.
+Joomini: a chat app (FastAPI + Next.js 14 App Router + Postgres) that routes each question to one of 9 LLMs (OpenAI / Google / Anthropic × small / medium / large). In `auto` mode, an mmBERT classifier picks the **company** from the question's category, and E5-embedding similarity picks the **size** from a complexity score. Manual mode lets the user pick company and size directly. See README.md for the feature list, the memory mechanisms, and per-format attachment handling.
 
 ## Commands
 
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email_lower ON users (lower(email));
 INSERT INTO users (id, email, name)
-VALUES ('00000000-0000-0000-0000-000000000001', 'youngsil@joon.com', '장영실') ON CONFLICT DO NOTHING;
+VALUES ('00000000-0000-0000-0000-000000000001', 'joonyong.park.dev@gmail.com', '박준용') ON CONFLICT DO NOTHING;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS user_id UUID;
 UPDATE projects SET user_id = '00000000-0000-0000-0000-000000000001' WHERE user_id IS NULL;
 ALTER TABLE projects ALTER COLUMN user_id SET NOT NULL;
@@ -378,9 +378,9 @@ To add a tool:
 
 - **No SQLAlchemy `relationship()`** anywhere. Use explicit `select()`/joins and assemble results by hand, which avoids async lazy-load `MissingGreenlet` errors.
 - **There is no login yet, but there is a `users` table.**
-  - `init_db()` seeds one fixed user (`DEMO_USER_ID`, 장영실 / youngsil@joon.com). Existing data already used that id, so nothing was rewritten.
+  - `init_db()` seeds one fixed user (`DEMO_USER_ID`, 박준용 / joonyong.park.dev@gmail.com). Existing data already used that id, so nothing was rewritten.
   - The frontend reads the current user from `GET /users/me` (sidebar user button, 계정 설정 tab). The sidebar 로그아웃 button is a deliberate no-op until login exists.
-  - The seed's `ON CONFLICT DO NOTHING` does not update an existing row. If the server DB still has the old email, run: `UPDATE users SET email = 'youngsil@joon.com' WHERE id = '00000000-0000-0000-0000-000000000001';`
+  - The seed's `ON CONFLICT DO NOTHING` does not update an existing row. If the server DB still has an old name or email, run: `UPDATE users SET email = 'joonyong.park.dev@gmail.com', name = '박준용' WHERE id = '00000000-0000-0000-0000-000000000001';`
   - Code still uses the `DEMO_USER_ID` constant as "the current user". When login is added, replace those usages with the logged-in user.
   - `conversations`, `projects`, `user_memory`, and `user_settings` have a `user_id` FK to `users` with `ON DELETE CASCADE`. `projects.user_id` is the newest, and project child tables (`project_files`, `project_memory`) get their owner through the project.
   - Deleting a user cascades in the DB but leaves uploaded files on disk, so deactivate with `is_active=false` instead.

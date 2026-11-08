@@ -24,8 +24,8 @@ from app.core.db import Base
 # user_id를 바꾸지 않고 FK만 걸 수 있었다. 진짜 로그인을 붙일 때는 이 상수를
 # 쓰는 곳들을 "현재 로그인한 사용자"로 바꾸면 된다.
 DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-DEMO_USER_NAME = "장영실"
-DEMO_USER_EMAIL = "youngsil@joon.com"
+DEMO_USER_NAME = "박준용"
+DEMO_USER_EMAIL = "joonyong.park.dev@gmail.com"
 
 
 class User(Base):

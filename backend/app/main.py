@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
 _DOCS_ENABLED = os.environ.get("ENABLE_DOCS") == "1"
 
 app = FastAPI(
-    title="ASAP",
+    title="Joomini",
     lifespan=lifespan,
     docs_url="/docs" if _DOCS_ENABLED else None,
     redoc_url="/redoc" if _DOCS_ENABLED else None,
