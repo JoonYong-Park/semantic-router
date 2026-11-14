@@ -51,6 +51,25 @@ def put_project_memory(uid, pid, name: str, summary: str, details: list[str],
     return {"id": mem_id, "project_id": str(pid), "name": name, "summary": summary, "details": details}
 
 
+def _find_owned(uid, mem_id) -> dict | None:
+    found = dynamo.query_all(
+        IndexName=keys.GSI_BY_ID, KeyConditionExpression=Key("GSI3PK").eq(str(mem_id))
+    )
+    for item in found:
+        if item.get("SK", "").startswith(keys.MEM_PREFIX) and item.get("owner_pk") == keys.user_pk(uid):
+            return item
+    return None
+
+
+def update_memory_by_id(uid, mem_id, summary: str, details: list[str]) -> dict | None:
+    """메모리 화면에서 토픽 요약과 상세를 직접 고칠 때 (전역, 프로젝트 공통)."""
+    item = _find_owned(uid, mem_id)
+    if item is None:
+        return None
+    dynamo.update(item["PK"], item["SK"], set_={"summary": summary, "details": details, "updated_at": now_iso()})
+    return strip_keys(dynamo.get_item(item["PK"], item["SK"]))
+
+
 def delete_memory_by_id(uid, mem_id) -> bool:
     """전역인지 프로젝트 메모리인지 모르는 id를 지운다 (AP4).
     GSI3로 위치를 찾고, owner_pk로 내 메모리인지 확인한 뒤에만 지운다."""

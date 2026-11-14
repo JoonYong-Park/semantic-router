@@ -1,0 +1,32 @@
+{
+    "dev": {
+        "app_function": "app.app",
+        "project_name": "joomini",
+        "runtime": "python3.12",
+        "aws_region": "ap-northeast-2",
+        "s3_bucket": "joomini-zappa-deploy-CHANGE-ME",
+        "memory_size": 1024,
+        "timeout_seconds": 60,
+        "keep_warm": true,
+        "cors": true,
+        "environment_variables": {
+            "DYNAMODB_TABLE": "joomini",
+            "FRONTEND_ORIGIN": "https://CHANGE-ME"
+        },
+        "extra_permissions": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
+                    "dynamodb:Query", "dynamodb:BatchWriteItem", "dynamodb:ConditionCheckItem",
+                    "dynamodb:DescribeTable"
+                ],
+                "Resource": [
+                    "arn:aws:dynamodb:ap-northeast-2:*:table/joomini",
+                    "arn:aws:dynamodb:ap-northeast-2:*:table/joomini/index/*"
+                ]
+            }
+        ],
+        "exclude": ["scripts", "Dockerfile.dev", "*.md", "zappa_settings.example.json"]
+    }
+}
