@@ -184,6 +184,13 @@ async def search_web(
             continue
         try:
             results = await search(query, max_results, time_range, site_hint)
+            # 날씨 질문에서 모델이 time_range="day"와 site_hint="weather"를 함께 걸면,
+            # 신뢰 도메인 2곳에 "오늘 색인된 글" 조건까지 겹쳐 결과가 0건이 되는 걸
+            # 확인했다(예: "서울 오늘 날씨 기온 강수"). 기상 사이트 예보 페이지는
+            # 날짜와 무관하게 최신 정보라, 이 경우만 시간 필터를 풀고 한 번 더 찾는다.
+            if not results and time_range and site_hint:
+                results = await search(query, max_results, None, site_hint)
+                logger.info("웹 검색 0건, 시간 필터 해제 후 재검색 (provider=%s, results=%d)", name, len(results))
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{name}: {_short_error(exc)}")
             logger.warning("웹 검색 실패, 다음 제공자로 폴백 (provider=%s): %s", name, _short_error(exc))

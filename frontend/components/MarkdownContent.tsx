@@ -1,11 +1,16 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+// CommonMark는 닫는 **가 구두점 뒤 + 한글 앞에 오면 강조로 인정하지 않아서
+// "**5,500원(+2.67%)**으로"처럼 별표가 그대로 보였다. 한중일 문자 규칙을 보완하는 플러그인.
+import remarkCjkFriendly from "remark-cjk-friendly";
 
 export default function MarkdownContent({ content }: { content: string }) {
   return (
     <div className="max-w-none text-sm leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        // singleTilde: false - "-1.5~7.4℃, 최고 14.7~16.8℃"처럼 범위를 뜻하는 ~ 두 개가
+        // 취소선으로 렌더링되던 문제. 취소선은 ~~텍스트~~ 형태만 인정한다.
+        remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkCjkFriendly]}
         components={{
           p: ({ children }) => <p className="my-3 whitespace-pre-wrap">{children}</p>,
           h1: ({ children }) => (

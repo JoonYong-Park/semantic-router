@@ -24,10 +24,16 @@ notebooks/
 ├── bert/                              # 분류기 + 라우팅 실험
 │   ├── bert_model_tests.ipynb
 │   └── results/routing_simulation.csv
-└── complexity/                        # 복잡도 점수 정량 평가
-    ├── complexity_evaluation.ipynb    # A/B/C 세 조합 통합
-    └── results/complexity_eval_results_final.csv
+├── complexity/                        # 복잡도 점수 정량 평가 (평가셋 v1, 이전 방식)
+│   ├── complexity_evaluation.ipynb    # A/B/C 세 조합 통합
+│   └── results/complexity_eval_results_final.csv
+└── eval/                              # 평가셋 v2 + 현재 서비스(kNN) 근거 — eval/README.md
+    ├── rejudge_v2.py                  # 기준표 기반 judge 2회 재채점
+    ├── evaluate_router.py             # 카테고리 정확도 + 크기 판단 방식 교차검증
+    └── results/                       # eval_set_v2.csv · rejudge_raw.json · router_eval.md
 ```
+
+> 현재 서비스의 복잡도 판단은 `eval/`의 kNN 방식입니다. `complexity/` 노트북은 이전 sigmoid 방식의 기록이며, 10-07 리팩토링 이전 import 경로(`app.complexity`)를 써서 `RECOMPUTE=True`로는 실행되지 않습니다.
 
 ---
 

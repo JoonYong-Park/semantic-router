@@ -26,7 +26,7 @@ Model IDs and routing maps live in [backend/app/routing/models.json](backend/app
 ## Features
 
 - **Category classification** — mmBERT classifies each question into one of 14 MMLU-Pro categories, which maps to a company (OpenAI / Google / Anthropic).
-- **Complexity scoring** — E5 embedding similarity against easy/hard reference examples picks a size (small / medium / large) within that company.
+- **Complexity scoring** — a kNN vote over E5 embeddings of labeled reference questions picks a size (small / medium / large) within that company. Evaluated on a 100-question rubric-labeled set with 5-fold cross-validation (3-tier agreement 71% → 80.8%, large recall 17% → 79% versus the previous similarity-score method) and on a held-out set of realistic work requests that exposed and fixed a length bias (long easy requests routed small 17% → 83%). See [notebooks/eval](notebooks/eval/README.md).
 - **Streaming responses** — replies stream token-by-token over SSE instead of waiting for the full response.
 - **Persistent conversations** — chat rooms and messages are stored in Postgres, with auto-generated chat titles.
 - **Context retention** — each reply is generated with a token-budgeted sliding window of prior turns, not just the latest message.
