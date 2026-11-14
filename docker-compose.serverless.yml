@@ -1,0 +1,53 @@
+# 서버리스 전환(Flask + DynamoDB)용 로컬 개발 환경.
+# 기존 FastAPI + Postgres 개발 환경(docker-compose.dev.yml)과 별개로 띄운다.
+#   docker compose -f docker-compose.serverless.yml up -d
+#   docker compose -f docker-compose.serverless.yml run --rm flask python scripts/create_table.py
+name: joomini-serverless
+
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    # -sharedDb: 자격 증명/리전과 상관없이 DB 파일 하나를 공유한다.
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal/data"
+    user: root
+    volumes:
+      - dynamodb_data:/home/dynamodblocal/data
+    ports:
+      - "8001:8000"   # 호스트 8000은 기존 FastAPI 백엔드가 쓰므로 8001로 노출
+
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin:latest
+    container_name: dynamodb-admin
+    environment:
+      DYNAMO_ENDPOINT: http://dynamodb:8000
+      AWS_REGION: ap-northeast-2
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    depends_on:
+      - dynamodb
+    ports:
+      - "8002:8001"   # 브라우저에서 http://localhost:8002 로 테이블과 아이템 확인
+
+  flask:
+    build:
+      context: ./backend-flask
+      dockerfile: Dockerfile.dev
+    container_name: flask-backend
+    environment:
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+      DYNAMODB_TABLE: joomini
+      AWS_REGION: ap-northeast-2
+      # DynamoDB Local은 키 값이 영문자와 숫자만이면 아무 값이나 받는다.
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      FRONTEND_ORIGIN: http://localhost:3000
+    volumes:
+      - ./backend-flask:/app
+    depends_on:
+      - dynamodb
+    ports:
+      - "5001:5000"
+
+volumes:
+  dynamodb_data:
