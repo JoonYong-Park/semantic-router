@@ -90,6 +90,49 @@ def delete_keys(keys: list[dict]) -> int:
     return len(keys)
 
 
+def update_expr(set_: dict | None = None, remove: list | None = None, add: dict | None = None,
+                if_not_exists: dict | None = None) -> dict:
+    """UpdateExpression과 이름/값 치환을 만든다.
+
+    name, ttl, source, size, status 같은 DynamoDB 예약어와 부딪히지 않도록
+    모든 속성 이름을 #a0, #a1 ... 별칭으로 바꾼다. 반환값은 update_item(**...)이나
+    TransactWriteItems의 Update에 그대로 펼쳐 넣는다.
+    """
+    names: dict[str, str] = {}
+    values: dict[str, object] = {}
+
+    def alias(attr: str) -> str:
+        for k, v in names.items():
+            if v == attr:
+                return k
+        k = f"#a{len(names)}"
+        names[k] = attr
+        return k
+
+    def val(v) -> str:
+        k = f":v{len(values)}"
+        values[k] = to_dynamo(v)
+        return k
+
+    parts = []
+    sets = [f"{alias(k)} = {val(v)}" for k, v in (set_ or {}).items()]
+    sets += [f"{alias(k)} = if_not_exists({alias(k)}, {val(v)})" for k, v in (if_not_exists or {}).items()]
+    if sets:
+        parts.append("SET " + ", ".join(sets))
+    if add:
+        parts.append("ADD " + ", ".join(f"{alias(k)} {val(v)}" for k, v in add.items()))
+    if remove:
+        parts.append("REMOVE " + ", ".join(alias(k) for k in remove))
+    out = {"UpdateExpression": " ".join(parts), "ExpressionAttributeNames": names}
+    if values:
+        out["ExpressionAttributeValues"] = values
+    return out
+
+
+def update(pk: str, sk: str, **kwargs) -> None:
+    table().update_item(Key={"PK": pk, "SK": sk}, **update_expr(**kwargs))
+
+
 def strip_keys(item: dict) -> dict:
     """응답으로 내보낼 때 PK/SK/GSI 키 같은 저장용 속성은 뺀다."""
     return {k: v for k, v in item.items() if k not in _KEY_ATTRS}
