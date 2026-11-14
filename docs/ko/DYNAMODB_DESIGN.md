@@ -141,15 +141,33 @@ Lambda + Zappa 배포를 위해 PostgreSQL(테이블 9개)을 DynamoDB로 옮길
 
 ---
 
-## 7. 결정이 필요한 것
+## 7. 결정 사항 (2026-11-14 확정)
 
-- [ ] 단일 테이블로 갈지, 엔티티별 테이블(9개)로 갈지. 이 문서는 단일 테이블 기준이다. 엔티티별 테이블은 이해하기 쉽지만 대화 화면(AP7)에 쿼리가 2번 필요하고 GSI가 늘어난다.
-- [ ] 채팅 검색을 1차 배포에 포함할지 (포함하면 위 2번의 앱 내 검색 방식).
-- [ ] 기존 Postgres 데이터를 옮길지, 새로 시작할지. 옮긴다면 테이블별로 읽어서 위 키 구조로 쓰는 일회성 스크립트가 필요하다.
-- [ ] 결제 주기와 사용량 기준 시간대(KST) 유지 여부.
+| 항목 | 결정 | 이유 |
+|---|---|---|
+| 테이블 구성 | **단일 테이블 `joomini` + GSI 3개** | AWS 가이드는 함께 조회하는 데이터를 한 테이블에 모아 테이블 수를 최소로 유지하라고 권한다. 대화 화면(AP7)을 Query 한 번으로 끝낼 수 있고, GSI 3개는 테이블당 기본 한도 20개에 한참 못 미친다. |
+| 용량 모드 | **온디맨드 (PAY_PER_REQUEST)** | 사용량이 적고 들쭉날쭉한 데모라 처리량을 미리 정할 필요가 없다. 쓴 만큼만 과금되어 Lambda의 비용 구조와 맞는다. |
+| 채팅 검색 | **1차 배포에 포함, 앱 내 검색** | 사용자 한 명 규모라 대화와 메시지를 Query해 앱에서 걸러도 충분하다. OpenSearch는 데이터가 커질 때 검토한다. |
+| 기존 데이터 | **새로 시작** | 온프레미스 데이터는 데모 데이터다. 필요해지면 테이블별 일회성 이관 스크립트를 따로 만든다. |
+| 시간대 | **KST 유지** | 사용량 그래프와 결제 주기가 지금 KST 기준이라 화면 동작을 바꾸지 않는다. |
+| 숫자 타입 | **float 금지, Decimal 사용** | boto3는 DynamoDB Number를 `Decimal`로 주고받는다. `complexity_score`처럼 float인 값은 저장 전에 `Decimal(str(x))`로 바꾼다. |
 
-## 8. 다음 단계
+## 8. 근거 (AWS 공식 문서와 Zappa 문서)
 
-1. 위 결정 사항 확정
-2. 로컬 환경: `docker-compose.dev.yml`에 DynamoDB Local 추가, 테이블과 GSI 생성 스크립트 작성
-3. 데이터 접근 계층(`repo`) 작성: 위 AP 번호 하나당 함수 하나 (`list_conversations(uid)`, `get_conversation_page(cid)` 등)
+| 사실 | 설계에 미치는 영향 | 출처 |
+|---|---|---|
+| 아이템 최대 크기 400KB (속성 이름 포함) | 문서 추출 텍스트는 S3로, 긴 메시지는 S3 분기 | [DynamoDB Constraints](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Constraints.html) |
+| 트랜잭션 최대 100개 아이템, 4MB. 같은 아이템을 한 트랜잭션에서 두 번 다룰 수 없음 | AP10 묶음 쓰기는 가능. 첨부가 많은 턴도 100개 안쪽 | 같은 문서 |
+| BatchWriteItem 최대 25개, Query 결과는 호출당 1MB | 삭제는 25개씩 나눠서, 조회는 `LastEvaluatedKey`로 이어서 | 같은 문서 |
+| TTL 만료 아이템은 "만료 후 보통 며칠 안에" 삭제되고, 그 전까지는 Query 결과에 나온다. TTL 삭제는 Streams에 서비스 삭제로 기록된다 | 고아 첨부는 화면에 노출되지 않으므로 지연 삭제로 충분. 만료 여부가 중요한 조회는 `ttl > now` 필터를 건다. S3 정리는 Streams로 연결 | [DynamoDB TTL](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/howitworks-ttl.html) |
+| GSI 기본 한도 테이블당 20개 | GSI 3개로 여유 있음 | [DynamoDB Quotas](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html) |
+| DynamoDB Local은 엔드포인트만 바꾸면 같은 코드로 동작. 단, 트랜잭션 충돌 예외가 발생하지 않고 읽기는 사실상 강한 일관성처럼 보인다 | 로컬 개발은 DynamoDB Local. GSI 지연 반영(최종 일관성) 문제는 로컬에서 재현되지 않으므로 코드에서 미리 대비 | [DynamoDB Local 사용 노트](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.UsageNotes.html) |
+| Lambda zip 배포는 압축 해제 기준 250MB, 컨테이너 이미지는 10GB, 실행 최대 15분, /tmp 최대 10GB | torch와 라우터 모델(3GB 이상)은 zip에 못 들어감. 모델 경량화나 외부 API 전환이 필요 | [Lambda quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html) |
+| API Gateway REST API 통합 타임아웃은 기본 29초이고, 2024년 6월부터 Regional REST API는 쿼터 증가 요청으로 늘릴 수 있다 (계정의 리전 스로틀 한도가 줄어들 수 있음) | 긴 LLM 응답은 우선 비동기 작업과 폴링으로 설계하고, 타임아웃 증가는 보조 수단으로 | [AWS 발표 (2024-06)](https://aws.amazon.com/about-aws/whats-new/2024/06/amazon-api-gateway-integration-timeout-limit-29-seconds) |
+| Zappa는 Python 3.9~3.14, Flask(WSGI), `@task` 비동기 실행(인자 256KB 이하), `events` cron 스케줄, ECR 컨테이너 이미지 배포를 지원 | 백그라운드 작업과 스케줄러를 Zappa 기능으로 옮김 | [Zappa README](https://github.com/zappa/Zappa) |
+
+## 9. 다음 단계
+
+1. 로컬 환경: `docker-compose.dev.yml`에 DynamoDB Local 추가, 테이블과 GSI 생성 스크립트 작성
+2. 데이터 접근 계층(`repo`) 작성: 위 AP 번호 하나당 함수 하나 (`list_conversations(uid)`, `get_conversation_page(cid)` 등)
+3. DynamoDB Local에서 스모크 테스트
