@@ -46,13 +46,53 @@ docker compose -f docker-compose.serverless.yml run --rm flask python scripts/sm
 
 ---
 
+## 2026-11-15 2차 작업: 나머지 API 전부 이전, 로컬에서 화면까지 동작
+
+### 한 일
+
+| 내용 | 파일 |
+|---|---|
+| 엔진 코드(라우팅, 모델 호출, 툴, 문서 생성/수정, 웹 검색, 토큰 계산)를 그대로 복사 | `app/routing`, `app/llm`, `app/tools`, `app/documents`, `app/websearch`, `app/core/tokens.py` |
+| 대화 CRUD, 메시지 조회, 메시지 전송(SSE), 재접속 스트림 | `routes/conversations.py`, `chat/turn.py`, `chat/history.py`, `chat/stream.py` |
+| 첨부 업로드/취소/미리보기, 프로젝트 CRUD/참고자료/메모리 추출 | `routes/attachments.py`, `routes/projects.py`, `routes/file_views.py`, `services/files.py` |
+| 툴이 만든 파일 저장, 수정 툴의 파일 조회를 DynamoDB로 | `services/generated.py`, `tools/edit.py` |
+| 사용량(카운터 기반), 검색, 메모리 추출 트리거, 프로필 사진, 구버전 `/chat` | `routes/usage.py`, `routes/misc.py`, `routes/users.py`, `memory/extract.py` |
+| Flask를 보는 프론트를 3001에 추가 (프론트 코드는 그대로, API 주소만 5001) | `docker-compose.serverless.yml` |
+
+### 기존과 달라진 점
+
+- **파일 경로 대신 저장소 키.** 아이템에는 `chats/{cid}/{id}.docx` 같은 키만 저장하고 실제 읽기/쓰기는 `storage.py`가 한다. S3로 갈 때 이 파일만 바꾸면 된다.
+- **추출 텍스트는 아이템이 아니라 파일로.** DynamoDB 아이템 상한(400KB) 때문에 `{폴더}/{id}.extracted.json`에 두고 아이템에는 `extracted_key`만 둔다.
+- **비동기 작업은 스레드.** Flask는 동기 서버라, 응답 생성은 스레드 하나가 `asyncio.run()`으로 돈다(엔진 코드가 async). 업로드 추출, 제목 생성도 스레드. Lambda에서는 응답 뒤 실행이 멈추므로 이 부분은 남은 일 6, 7번에서 바꾼다.
+- **사용량**은 답변 저장 때 일별/시간별 카운터에 더하고 화면은 카운터만 읽는다.
+
+### 확인한 것
+
+- **기존 API와 응답 형태 비교** (같은 요청을 FastAPI 8000과 Flask 5001에 보냄): 23개 중 19개 키 구조 동일. 나머지 4개는 형태 차이가 아니다. 사용량 3개는 새 DB에 아직 데이터가 없어 `by_model`이 빈 목록이었고, `/search`는 **기존 FastAPI가 로컬에서 500**(로컬 Postgres에 pg_trgm 확장이 없는 것으로 보임)이었다.
+- **종단 테스트 21개 통과** (실제 모델 호출 + SSE): 수동/auto 모드, 맥락 유지, docx 첨부 질문, 엑셀 파일 생성과 표 미리보기, 프로젝트 지침과 참고자료 반영, 제목 생성, 목록 순서, 사용량 카운터, 검색, 재접속 204.
+- **스모크 테스트 46개** 다시 통과.
+- **브라우저**(http://localhost:3001)에서 메시지 전송, auto 라우팅 배지, 스트리밍 표시 확인.
+
+### 발견한 문제
+
+- **auto 모드 준비 판정이 이르다 (기존 코드에도 있음).** `routing/complexity.py`의 `is_ready()`가 모델 객체만 보고, 참조 문장 임베딩이 끝나기 전에 true가 됐다. 그 사이 auto 요청은 "복잡도 모델이 아직 로드되지 않았습니다"로 실패한다. Flask 쪽은 마지막 단계(`_ref_label`)까지 보도록 고쳤다. 기존 `backend/`는 고치지 않았다.
+- **개발 서버 재시작 시 컨테이너가 죽는다.** 코드 수정으로 리로더가 재시작할 때 torch 스레드 때문에 프로세스가 비정상 종료됐다. compose에 `restart: unless-stopped`를 넣었다.
+- `.gitignore`에서 `uploads/`와 `backend-flask/zappa_settings.json`이 한 줄로 붙어 둘 다 무시되지 않던 것을 고쳤다 (1차 작업 때 생긴 실수).
+
+### 로컬 환경 정리
+
+- 기존 FastAPI 개발 환경(`docker-compose.dev.yml`의 backend, frontend, postgres) 컨테이너와 빌드 이미지를 지웠다. **데이터 볼륨(`semantic-router_postgres_data`)과 모델 캐시 볼륨은 남겼다.** 다시 쓰려면 `docker compose -f docker-compose.dev.yml up -d --build`.
+- 멈춰 있던 `mattermost-postgres` 컨테이너도 지웠다 (볼륨은 남김).
+
+---
+
 ## 남은 일 (다음 순서)
 
 | 순서 | 할 일 | 비고 |
 |---|---|---|
 | 1 | AWS 계정 준비: 배포용 IAM 사용자, AWS CLI, Zappa 배포 버킷 | 사용자 확인 필요 (계정과 비용) |
-| 2 | `/health`와 `/settings`만으로 첫 `zappa deploy dev` | 권한, 리전, 패키징 문제를 먼저 해결 |
-| 3 | 프로젝트, 대화 CRUD 엔드포인트 이전 (`/projects`, `/conversations` 목록과 수정, 삭제) | repo 계층은 준비됨 |
+| 2 | 첫 `zappa deploy dev` | 지금은 앱이 시작할 때 torch를 import해서(routing/classifier) zip 배포가 안 된다. 5번을 먼저 정하거나 그 import를 지연시켜야 한다 |
+| 3 | ~~프로젝트, 대화 CRUD 엔드포인트 이전~~ | 2차 작업에서 완료 (전체 API) |
 | 4 | 파일 저장을 S3로 (첨부, 프로젝트 파일, 아바타). 업로드는 presigned URL | 추출 텍스트도 S3 (아이템 400KB 제한) |
 | 5 | 라우터 모델 결정: torch + mmBERT + e5-large(3GB 이상)는 zip(250MB)에 안 들어감 | 임베딩 API 전환 또는 컨테이너 이미지. 바꾼 뒤 `notebooks/eval`로 재검증 |
 | 6 | 채팅 전송을 비동기 작업 + 폴링으로 (SSE 대체) | 프론트 `lib/api.ts` 수신부만 수정 |
