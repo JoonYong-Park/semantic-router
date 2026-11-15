@@ -3,7 +3,8 @@
 Lambda + Zappa 배포를 위해 PostgreSQL(테이블 9개)을 DynamoDB로 옮길 때의 조회 패턴과 키 설계.
 코드를 고치기 전에 이 문서를 먼저 확정한다. 조회 패턴이 바뀌면 GSI 추가와 기존 데이터 재기록이 필요하기 때문이다.
 
-- 기준 코드: `backend/app/core/models.py`와 각 `router.py`의 `select()` / `delete()` / `update()`
+- 기준 코드: 당시 FastAPI 백엔드의 `backend/app/core/models.py`와 각 `router.py`의 `select()` / `delete()` / `update()`. 이 코드는 지금 저장소에서 지웠고 `main` 브랜치와 git 기록(커밋 `b6d9da8` 이전)에 있다. 아래 표의 "코드 위치"도 그 기준이다.
+- 구현: `backend/app/db/` (키 `keys.py`, 조회 패턴별 함수 `repo/`)
 - 전제: 로그인(Cognito)이 붙으면 모든 요청에 `user_id`가 있다. 지금의 `DEMO_USER_ID`는 그 자리를 대신한다.
 
 ---

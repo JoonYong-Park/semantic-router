@@ -16,7 +16,7 @@
    1. 지금 실행 중인 `backend`/`frontend` 이미지에 `:previous` 태그를 붙여 백업합니다.
    2. `docker compose build`로 새 이미지를 빌드합니다.
    3. `docker compose up -d`로 새 컨테이너를 띄웁니다.
-   4. `scripts/healthcheck.sh`가 backend의 `GET /health`를 3초 간격으로 최대 10번 확인합니다.
+   4. `scripts/healthcheck.sh`가 backend의 `GET /health`를 3초 간격으로 최대 40번(2분) 확인합니다. 백엔드가 시작할 때 torch를 불러오고 DynamoDB 테이블을 확인해서 30초보다 오래 걸릴 수 있습니다.
    5. 빌드, 실행, 헬스체크 중 하나라도 실패하면 자동 롤백합니다.
 3. 배포 결과는 GitHub Actions 실행 요약(step summary)에 기록됩니다.
 
@@ -25,6 +25,15 @@
 - **롤백 조건:** `docker compose build`가 실패하거나, `docker compose up -d`가 실패하거나, 새 컨테이너가 재시도 횟수 안에 `/health` 확인을 통과하지 못한 경우입니다.
 - **롤백의 의미:** `scripts/deploy.sh`의 롤백은 **배포 롤백**입니다. 빌드 직전에 `:previous`로 백업해 둔 Docker 이미지로 컨테이너를 되돌리는 것이고, `git revert` 같은 소스 코드 롤백이 아닙니다. `main`의 커밋 기록은 그대로입니다.
 - 롤백이 성공하면(이전 이미지가 다시 떠서 헬스체크를 통과하면) 워크플로는 실패로 표시되지만, 서비스는 마지막으로 정상이던 버전으로 계속 돌아갑니다.
+
+## FastAPI + Postgres에서 Flask + DynamoDB로 바뀐 뒤 첫 배포
+
+이 변경이 `main`에 처음 들어가는 배포는 아래를 확인해야 합니다.
+
+- **데이터는 옮기지 않습니다.** 새 백엔드는 서버의 DynamoDB Local(`dynamodb_data` 볼륨)에 빈 테이블로 시작합니다. 기존 Postgres 데이터(`postgres_data` 볼륨)는 지우지 않고 남아 있습니다.
+- **기존 `postgres` 컨테이너는 그대로 남습니다.** `docker-compose.yml`에서 빠졌기 때문에 compose가 고아 컨테이너로 경고만 하고 건드리지 않습니다. 새 버전이 정상인 것을 확인한 뒤 서버에서 직접 `docker stop postgres && docker rm postgres`로 정리합니다(볼륨은 남음).
+- **이 배포에서는 자동 롤백이 동작하지 않습니다.** `:previous` 이미지는 Postgres가 필요한 FastAPI 이미지인데 새 `docker-compose.yml`에는 Postgres 설정이 없어서, 되돌려도 `/health`를 통과하지 못합니다. 실패하면 이전 커밋으로 체크아웃해 `docker compose up -d --build`로 직접 되돌립니다.
+- 업로드 폴더(`UPLOAD_HOST_DIR`)는 같은 호스트 폴더를 컨테이너의 `/data/uploads`로 마운트합니다. 기존 파일은 남지만 새 DB에는 연결 정보가 없어 쓰이지 않습니다.
 
 ## 직접 조치가 필요한 경우
 
@@ -36,12 +45,12 @@
 
 ## 채팅 첨부 파일 저장소와 배포
 
-`docker-compose.yml`의 `backend` 서비스는 채팅 첨부 파일용으로 호스트 폴더를 컨테이너의 `/app/uploads`에 마운트합니다. 호스트 경로는 서버마다 달라서 저장소가 아니라 `.env`의 `UPLOAD_HOST_DIR`로 지정합니다. 이 마운트는 `scripts/deploy.sh`의 백업·롤백과 서로 영향을 주지 않습니다.
+`docker-compose.yml`의 `backend` 서비스는 채팅 첨부 파일용으로 호스트 폴더를 컨테이너의 `/data/uploads`에 마운트합니다. 호스트 경로는 서버마다 달라서 저장소가 아니라 `.env`의 `UPLOAD_HOST_DIR`로 지정합니다. 이 마운트는 `scripts/deploy.sh`의 백업·롤백과 서로 영향을 주지 않습니다.
 
 - 스크립트는 **빌드한 이미지**(`semantic-router-backend`, `semantic-router-frontend`)만 `:previous`로 태그하고 복원합니다. 볼륨이나 바인드 마운트는 건드리지 않습니다.
-- `UPLOAD_HOST_DIR`은 Docker가 관리하는 이름 있는 볼륨(`backend_hf_cache`, `postgres_data`)이 아니라 평범한 호스트 폴더입니다. 컨테이너 수명과 상관없이 존재하므로, 일반 재배포든 자동 롤백이든 같은 호스트 경로를 마운트하고 업로드 파일은 영향을 받지 않습니다.
+- `UPLOAD_HOST_DIR`은 Docker가 관리하는 이름 있는 볼륨(`backend_hf_cache`, `dynamodb_data`)이 아니라 평범한 호스트 폴더입니다. 컨테이너 수명과 상관없이 존재하므로, 일반 재배포든 자동 롤백이든 같은 호스트 경로를 마운트하고 업로드 파일은 영향을 받지 않습니다.
 - runner 서버에 그 폴더가 없으면 자동으로 만들어집니다(Docker가 처음 `up`할 때, 또는 앱이 `Path.mkdir(parents=True, exist_ok=True)`로). 그래서 runner의 `.env`에 `UPLOAD_HOST_DIR`만 넣으면 따로 준비할 것은 없습니다.
-- 마운트 안에서는 용도별로 폴더가 나뉩니다. 채팅 첨부는 `uploads/chats/{chat_id}/`(구현됨), 프로젝트 참고자료는 `uploads/projects/{project_id}/`(아직 미구현)입니다. 이 구조가 바뀌어도 같은 마운트 폴더 안의 하위 폴더 구조일 뿐이라, 볼륨 마운트 설정은 바꿀 필요가 없습니다.
+- 마운트 안에서는 용도별로 폴더가 나뉩니다. 채팅 첨부는 `uploads/chats/{chat_id}/`(구현됨), 프로젝트 참고자료는 `uploads/projects/{project_id}/`입니다. 이 구조가 바뀌어도 같은 마운트 폴더 안의 하위 폴더 구조일 뿐이라, 볼륨 마운트 설정은 바꿀 필요가 없습니다.
 
 ### 업로드 파일 수명 규칙
 

@@ -4,7 +4,7 @@
 **API Gateway → Lambda(Flask, Zappa) → DynamoDB** 구조로 옮긴다. 프론트(Next.js)는 유지한다.
 
 - 브랜치: `feat/aws-serverless` (`main`은 손대지 않음. `main` 푸시는 온프레미스 자동 배포가 돌기 때문)
-- 기존 백엔드 `backend/`는 그대로 두고, 새 백엔드는 `backend-flask/`에 기능 단위로 옮긴다.
+- 1~2차 작업 동안은 기존 FastAPI 백엔드 `backend/`를 두고 새 백엔드를 `backend-flask/`에 옮겼다. 3차 작업에서 FastAPI 코드를 지우고 `backend-flask/`를 `backend/`로 바꿨다. 아래 1~2차 기록의 경로와 포트는 그 당시 기준이다.
 
 ---
 
@@ -83,6 +83,19 @@ docker compose -f docker-compose.serverless.yml run --rm flask python scripts/sm
 
 - 기존 FastAPI 개발 환경(`docker-compose.dev.yml`의 backend, frontend, postgres) 컨테이너와 빌드 이미지를 지웠다. **데이터 볼륨(`semantic-router_postgres_data`)과 모델 캐시 볼륨은 남겼다.** 다시 쓰려면 `docker compose -f docker-compose.dev.yml up -d --build`.
 - 멈춰 있던 `mattermost-postgres` 컨테이너도 지웠다 (볼륨은 남김).
+
+---
+
+## 2026-11-15 3차 작업: 이전 FastAPI 버전 제거, 구조와 포트 정리
+
+| 내용 | 비고 |
+|---|---|
+| `backend/`(FastAPI) 삭제, `backend-flask/` → `backend/` | FastAPI 코드는 `main`과 git 기록에 있다. 평가 노트북(`notebooks/eval`)이 `backend` 컨테이너의 `app.routing`, `app.llm`을 그대로 쓸 수 있다 |
+| 이전 `uploads/`(git에 없던 업로드 파일 13개)는 macOS 휴지통으로 이동, `uploads-flask/` → `uploads/` | 휴지통 이름 `joomini-uploads-fastapi-20261115` |
+| `docker-compose.serverless.yml` 삭제, `docker-compose.dev.yml`을 Flask + DynamoDB Local로 | 포트 원래대로: 화면 3000, API 8000 (DynamoDB Local 8001, 관리 화면 8002) |
+| `docker-compose.yml`(온프레미스 서버)도 Flask + DynamoDB Local로, Postgres 제거 | 같은 `backend/Dockerfile`을 gunicorn(워커 1, 스레드 16)으로 띄운다. 시작할 때 테이블이 없으면 만든다 |
+| `scripts/deploy.sh` 헬스체크 대기 30초 → 2분 | torch 로드와 테이블 확인 때문에 시작이 30초를 넘을 수 있다 |
+| `CLAUDE.md`, `README.md`, 배포·모델 교체 문서를 새 구조로 | 배포 문서에 "전환 후 첫 배포" 주의 사항 추가 (데이터 미이전, 기존 postgres 컨테이너 수동 정리, 이 배포는 자동 롤백 불가) |
 
 ---
 
