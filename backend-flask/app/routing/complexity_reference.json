@@ -1,0 +1,906 @@
+{
+ "_comment": "복잡도 kNN 참조 데이터. eval_v2: 평가셋 v2 100문항(기준표 재채점 라벨). v3_aug: 실사용형 업무 요청 80문항(길이 편향 보정용, 같은 기준표 라벨). complexity_examples.py의 EASY(small)/HARD(large) 예시와 합쳐 쓴다. v3의 test split은 검증 전용이라 여기 넣지 않는다. 생성: notebooks/eval/",
+ "judge_model": "gpt-6.1-sol",
+ "items": [
+  {
+   "text": "이진 탐색이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "해시 충돌은 어떻게 해결해?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "분산 시스템에서 CAP 정리 트레이드오프를 실제 사례로 설명해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "기어비가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "PID 제어기가 어떻게 동작해?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 구조물의 공진 주파수를 유한요소해석으로 추정해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "행복이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "자유의지랑 결정론이 뭐가 달라?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "칸트의 정언명령과 공리주의를 비교해서 트롤리 문제에 적용해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "계약서가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "저작권이랑 특허권 차이가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 계약 해지 조항이 상법상 유효한지 판례 근거로 검토해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "세포가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "DNA 복제는 어떻게 일어나?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "미토콘드리아 전자전달계의 ATP 합성 메커니즘을 설명해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "물의 화학식이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "산화환원반응이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 유기화합물의 반응 메커니즘을 단계별로 설명해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "중력이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "뉴턴의 운동법칙이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "양자 얽힘이 국소성 원리를 어떻게 위반하는지 벨 부등식으로 설명해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "감기랑 독감 차이가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "혈압이 높으면 왜 안 좋아?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 임상시험 데이터를 다중비교 보정해서 통계적으로 검정해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "57 더하기 89는 얼마야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이차방정식 근의 공식이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 비선형 제약조건 하에서 라그랑주 승수법으로 최적해를 구해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "인플레이션이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "환율은 왜 오르내려?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "양적완화가 장기 인플레이션 기대치에 미치는 영향을 분석해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "마케팅이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "손익분기점은 어떻게 계산해?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 회사 3개년 재무제표로 인수합병 시 적정 기업가치를 산출해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "조선은 언제 세워졌어?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "산업혁명이 왜 영국에서 시작됐어?",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "명청 교체기가 조선의 대외정책에 미친 영향을 사료 교차검증으로 분석해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "스트레스가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "인지부조화가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "손실 회피 이론을 게임이론 모델에 통합해서 소비자 행동을 설명해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "와이파이가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "블록체인이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 소프트웨어 시스템의 보안 취약점을 위협 모델링으로 분석하고 심층 방어 전략을 설계해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "P=NP야?",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "괴델의 불완전성 정리가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 코드 왜 안 돼?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "블랙홀 안에서는 어떻게 돼?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "의식이 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이거 왜 이렇게 비싸?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "3체 문제가 왜 안 풀려?",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 증명 맞아?",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "왜 하늘은 파래?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이거 합법이야?",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 코드 좀 고쳐줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이거 요약해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "다음 주 일정 정리해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 이메일 다듬어줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 표 정리해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "발표자료 개요 짜줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 문단 다시 써줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이거 번역해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 데이터 분석해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "면접 준비 도와줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 아이디어 어때?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "예산안 짜줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 글 피드백 줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "일정 좀 짜줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이거 정리해서 보고서로 만들어줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 문제 풀어줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 그림 설명해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "레시피 추천해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 상황에서 뭐라고 답장해야 할까?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 프로젝트 계획 짜줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "케인즈 경제학과 신자유주의 정책 차이를 실제 정책 사례로 비교해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 소설의 주제의식을 페미니즘 관점에서 분석해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "야구 규칙 좀 알려줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 유전 알고리즘의 수렴 속도를 개선하는 방법을 제안해줘",
+   "size": "medium",
+   "source": "eval_v2"
+  },
+  {
+   "text": "커피는 왜 써?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 브랜드 로고 디자인 어때?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "환경세 도입이 탄소배출에 미치는 영향을 계량경제학적으로 분석해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "오늘 기분이 왜 이래?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 다리 구조가 안전한지 하중 계산으로 검토해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "율리우스력이랑 그레고리력 차이가 뭐야?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 그래프 알고리즘의 최악의 시간복잡도를 증명해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "면역체계가 바이러스를 어떻게 인식해?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이 판결이 헌법상 평등원칙에 부합하는지 검토해줘",
+   "size": "large",
+   "source": "eval_v2"
+  },
+  {
+   "text": "빛의 속도는 왜 일정해?",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "점심 메뉴 추천해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "안녕하세요",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "삼성전자 주가 검색해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "삼성전자 주가 설명해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "오늘 서울 날씨 알려줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "오늘 삼성전자 주가 알려줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "오늘 분당 날씨 알려줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "출처도 알려줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "joonyong-park github을 검색해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "이사람 repo 뭐뭐있는지 검색해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "오늘 서울 날씨 알려줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "오늘 제주도 날씨 알려줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "서울 날씨 알려줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "서울 날씨 검색해줘",
+   "size": "small",
+   "source": "eval_v2"
+  },
+  {
+   "text": "분기 목표 정리해 줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "제안서 제목 추천 부탁해",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "출장비 합산해 줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "코드 오류 찾아줄래?",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "광고 문구 써 주세요",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "환불 안내문 작성 바람",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "계약 만료일 확인해",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "내일 일정 보여줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "회의록 한 줄 요약 요청",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "매출 추이 그려 줄래요?",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "면접 질문 뽑아주세요",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "부가세 계산 좀 해줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "테스트 사례 만들어 줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "검색 키워드 골라 봐",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "비밀유지 조항 설명해 줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "경쟁사 소식 알려줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "교육 일정 확인 부탁해요",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "기획안 목차 잡아줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "잠재고객 분류 기준",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "평가제도 유형 정리",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "온보딩 절차 알려줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "예산 편성 순서 안내",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "브랜딩·광고 차이 설명",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "상담 유형별 분류표",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "위탁과 제3자 제공 차이",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "회의록 구성 추천해줘",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "긴급도·중요도 나눠봐",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "보안등급별 취급 수칙",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "조달 입찰 방식 비교표",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "출장 정산 절차 순서도",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "신사업 철수 기준 세워줘",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "이 딜, 할인해도 남나?",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "악성 민원, 보상 어디까지?",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "회의 충돌, 우선순위 좀",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "이 유출, 신고 의무 있나",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "출시 연기 손익 따져줘",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "매출채권 손상액 추정",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "승진 편향을 가려주세요",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "실험 표본수 재설계하라",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "특허 침해 가능성 검토",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "해외 진출국 순위 매겨",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "감사 지적의 중대성은?",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "신규 입사자 안내문을 친근한 존댓말로 다듬되, 출근 시간과 준비 서류는 유지하고 전체를 다섯 문단으로 줄여 주세요.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "아래 지출 내역을 교통비·식비·소모품비로 나누고, 부가세 포함 금액 기준으로 항목별 합계를 계산해 줘.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "봄맞이 할인 행사 문구가 필요해요. 무료 배송 조건을 넣고, 과장 없이 밝은 어조로 제목 세 개와 본문을 써 주세요.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "내일 부산 출장 준비를 도와줄래? 아래 예약 문자에서 열차 시간과 숙소 주소만 추려 휴대폰 메모용으로 정리해 줘.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "아래 보안 공지를 비개발자도 이해하게 고쳐 써라. 비밀번호 변경 기한은 굵게 표시하고 실천 항목은 세 개로 묶어라.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "사내 엑셀 교육 설문을 객관식 다섯 문항으로 만들어 주세요. 난이도와 실무 활용도를 묻고 마지막에 자유 의견란도 넣어 주세요.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "디자인 피드백을 색상, 글꼴, 배치로 묶어 주실래요? 같은 의견은 합치고 각 항목 끝에 요청 부서명을 붙여 주세요.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "대표님 보고용으로 아래 실적 메모를 한 장 분량으로 압축해 주세요. 매출, 비용, 주요 이슈 순서로 쓰고 수치는 그대로 두세요.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "분실물 보관 안내문 하나 부탁해요. 수령 장소와 운영 시간을 넣고, 본인 확인이 필요하다는 내용을 부드럽게 알려 주세요.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "면접 일정 확정 메일을 써주세요. 지원자 이름은 빈칸으로 두고 화상 접속 방법, 소요 시간, 회신 기한을 포함해 주세요.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "해외 거래처에 보낼 아래 한국어 메일을 영어로 번역해 줘. 제품명은 유지하고 정중하되 지나치게 격식 차리지는 말아 줘.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "오늘 할 일을 오전과 오후로 나눠 체크리스트로 만들어 줘. 아래 목록만 사용하고 마감이 있는 일은 각 시간대 맨 위에 놓아줘.",
+   "size": "small",
+   "source": "v3_aug"
+  },
+  {
+   "text": "신규 구독 서비스의 시장 진입안을 준비 중이야. 경쟁사 가격과 고객 전환 비용을 비교해 초기 요금제 세 가지를 제안해 줘.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "재택근무와 시차출퇴근제의 생산성·협업 효과를 비교한 뒤, 육아기 직원에게 적용할 근무제도 초안을 작성 바랍니다.",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "협력사 계약서의 손해배상 조항과 책임 제한 조항이 충돌하는지 검토하고, 우리 회사에 불리한 부분의 수정 문구를 제시해 줘.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "수도권 당일배송 도입 시 자체 차량과 외주 운송의 비용·서비스 수준을 비교하여, 물동량별 운영 방식을 제안할 것.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "임직원 계정에 다중 인증과 조건부 접근을 도입할 경우 보안 효과와 사용 불편을 따져, 부서별 적용 순서를 권고해 주십시오.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "생산라인 불량률을 낮추려 합니다. 예방정비와 공정검사 강화의 효과·중단 시간을 비교해 현장 실행계획으로 구체화해 주세요.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "동남아 진출 후보국의 관세와 유통 구조를 비교하되, 현지 파트너 확보 난이도까지 반영해 우선 진출 국가를 골라 주세요.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "사무실 좌석을 고정형에서 공유형으로 바꿀지 검토 중입니다. 공간 비용과 팀 협업 특성을 비교한 배치 원칙을 세워 주세요.",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "경쟁 기술의 특허 동향과 논문 성과를 교차 분석해서, 우리 연구팀이 차별화할 만한 개발 주제와 검증 실험을 뽑아 줘.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "거래처의 외상 결제 한도를 조정하려고 해. 연체 이력과 최근 매출 기여도를 함께 보고 등급별 한도·회수 방침을 정리해 줘.",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "팀 워크숍 장소로 호텔과 연수원을 놓고 고민 중인데, 이동 시간과 총비용을 비교해서 참여율을 높일 일정까지 추천 부탁해요.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "신사업 후보 세 개를 시장성과 실행 난도로 비교하고, 예산 2억 원과 인력 다섯 명 안에서 분기별 검증 계획을 설계해 줘.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "이번 달 실주 원인을 업종별로 짚어 주시고, 가격 인하 없이 재접촉할 고객군과 영업 메시지를 우선순위대로 제안해 주세요.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "로그에서 장애 원인을 추론한 다음, 기존 API 호환성과 응답속도 기준을 지키는 수정안 및 단계적 배포 절차를 작성해 주세요.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "광고 성과를 채널별로 재평가해 볼래? 신규 고객 확보비를 낮추되 브랜드 검색량은 유지하도록 다음 달 예산과 실험안을 짜줘.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "창고별 재고와 배송 지연을 대조해서 병목을 찾고, 추가 채용 없이 당일 출고율을 높일 배치안과 예외 처리 기준을 설계해줘.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "내일 회의 세 건의 안건을 중복 없이 묶어 주고, 점심시간과 이동 시간을 확보한 일정표에 사전 준비물까지 붙여 주시겠어요?",
+   "size": "medium",
+   "source": "v3_aug"
+  },
+  {
+   "text": "외부 공유 파일의 접근 권한을 점검할 기준부터 세운 뒤, 업무 중단을 최소화하는 권한 회수 절차와 감사 지표를 제시하라.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "공급사 네 곳을 단가뿐 아니라 납기와 품질로 평가해 주세요. 특정 업체 의존도를 낮추면서 계약 전환 비용도 반영해 주세요.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "사용자 인터뷰에서 핵심 불편을 추출하고, 접근성 기준과 개발 기간 6주를 고려해 다음 버전 기능 범위와 검증 지표를 잡아줘.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "신입 교육 만족도와 현업 평가의 차이를 분석해서, 교육 시간을 늘리지 않고 실무 적응을 돕는 과정과 평가 방식을 짜 주세요.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "생산 불량 기록을 설비와 교대조별로 나눠 원인 가설을 세워라. 가동률을 유지하는 범위에서 검증 실험과 중단 기준도 정하라.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "사업장별 전력 사용을 비교한 뒤 감축 여지가 큰 곳을 고르고, 투자 회수 3년 이내인 개선책의 실행 순서까지 제안 바람.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "경쟁 기술 논문을 근거 수준별로 비교해 주실래요? 특허 침해 가능성과 연구 인력 한계를 고려한 후속 실험도 설계해 주세요.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "제휴 후보의 고객 중복도와 수익 배분 조건을 따져 본 다음, 독점권 없이 시작할 공동 사업안과 성과 미달 시 종료 기준을 써라.",
+   "size": "large",
+   "source": "v3_aug"
+  },
+  {
+   "text": "결산 지연 원인을 증빙 수집부터 승인까지 추적해 주세요. 내부 통제를 약화하지 않으면서 마감을 이틀 앞당길 절차가 필요합니다.",
+   "size": "large",
+   "source": "v3_aug"
+  }
+ ]
+}

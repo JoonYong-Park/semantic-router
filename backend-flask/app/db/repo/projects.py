@@ -54,16 +54,16 @@ def update_project(uid, pid, **fields) -> dict | None:
 
 
 # ------------------------------------------------------------------ 파일
-def add_project_file(uid, pid, original_name: str, s3_key: str, mime_type: str, size_bytes: int,
-                     extraction_status: str = "pending") -> dict:
+def add_project_file(uid, pid, original_name: str, storage_key: str, mime_type: str, size_bytes: int,
+                     extraction_status: str = "pending", fid: str | None = None) -> dict:
     """파일 아이템 생성과 용량 카운터 증가를 한 트랜잭션으로.
     용량 초과 검사는 호출 전에 get_project()의 files_total_bytes로 한다
     (ConditionExpression은 a + b 같은 산술을 지원하지 않는다)."""
-    fid = str(uuid.uuid4())
+    fid = str(fid or uuid.uuid4())
     now = now_iso()
     item = {
         "PK": keys.proj_pk(pid), "SK": keys.file_sk(now, fid),
-        "id": fid, "project_id": str(pid), "original_name": original_name, "s3_key": s3_key,
+        "id": fid, "project_id": str(pid), "original_name": original_name, "storage_key": storage_key,
         "mime_type": mime_type, "size_bytes": size_bytes, "extraction_status": extraction_status,
         "created_at": now, "GSI3PK": fid, "owner_pk": keys.user_pk(uid),
     }
@@ -108,12 +108,24 @@ def get_project_file(uid, fid) -> dict | None:
     return None
 
 
-def update_project_file(pid, sk: str, **fields) -> None:
-    dynamo.update(keys.proj_pk(pid), sk, set_={k: v for k, v in fields.items() if v is not None})
+def update_project_file(pid, sk: str, **fields) -> bool:
+    """None 값은 속성을 지운다. 처리 도중 파일이 삭제됐으면 False."""
+    set_ = {k: v for k, v in fields.items() if v is not None}
+    remove = [k for k, v in fields.items() if v is None]
+    try:
+        dynamo.table().update_item(
+            Key={"PK": keys.proj_pk(pid), "SK": sk},
+            ConditionExpression="attribute_exists(PK)",
+            **dynamo.update_expr(set_=set_ or None, remove=remove or None),
+        )
+    except dynamo.client().exceptions.ConditionalCheckFailedException:
+        return False
+    return True
 
 
-def delete_project_file(uid, fid) -> dict | None:
-    f = get_project_file(uid, fid)
+def delete_project_file(uid, fid, item: dict | None = None) -> dict | None:
+    """item(list_project_files의 한 항목, sk 포함)을 넘기면 GSI 조회 없이 바로 지운다."""
+    f = item or get_project_file(uid, fid)
     if f is None:
         return None
     dynamo.client().transact_write_items(TransactItems=[
@@ -124,7 +136,7 @@ def delete_project_file(uid, fid) -> dict | None:
             **dynamo.update_expr(add={"files_total_bytes": -int(f["size_bytes"])}),
         }},
     ])
-    return f  # s3_key로 파일 삭제는 호출하는 쪽에서
+    return f  # storage_key로 파일 삭제는 호출하는 쪽에서
 
 
 # ------------------------------------------------------------------ 삭제 (AP19)

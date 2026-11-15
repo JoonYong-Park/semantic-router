@@ -52,8 +52,8 @@ def list_conversations(uid) -> list[dict]:
         ScanIndexForward=False,
     )
     convs = [strip_keys(i) for i in items]
-    pinned = sorted((c for c in convs if c.get("pinned")), key=lambda c: c.get("sort_order", 0))
-    return pinned + [c for c in convs if not c.get("pinned")]
+    # 기존 ORDER BY pinned DESC, updated_at DESC와 같게: 고정 그룹 안에서도 최신순 그대로.
+    return [c for c in convs if c.get("pinned")] + [c for c in convs if not c.get("pinned")]
 
 
 def list_project_conversations(pid) -> list[dict]:
@@ -202,15 +202,16 @@ def messages_after(cid, after_sk: str | None) -> list[dict]:
 
 
 # ------------------------------------------------------------------ 첨부
-def create_attachment(uid, cid, original_name: str, s3_key: str, mime_type: str, size_bytes: int,
-                      source: str = "upload", extraction_status: str = "pending", **extra) -> dict:
+def create_attachment(uid, cid, original_name: str, storage_key: str, mime_type: str, size_bytes: int,
+                      source: str = "upload", extraction_status: str = "pending", aid: str | None = None,
+                      **extra) -> dict:
     """업로드(또는 생성) 시점에 만든다. message_id가 채워질 때까지 ttl이 걸려 있어서,
     메시지에 연결되지 않으면 DynamoDB TTL이 지워 준다 (AP13, 기존 정리 루프 대체)."""
-    aid = str(uuid.uuid4())
+    aid = str(aid or uuid.uuid4())  # 파일 이름에 id를 쓰려고 호출하는 쪽이 미리 만들 수 있다
     ttl_seconds = GENERATED_ORPHAN_SECONDS if source == "generated" else UPLOAD_ORPHAN_SECONDS
     item = {
         "PK": keys.conv_pk(cid), "SK": keys.att_sk(aid),
-        "id": aid, "chat_id": str(cid), "original_name": original_name, "s3_key": s3_key,
+        "id": aid, "chat_id": str(cid), "original_name": original_name, "storage_key": storage_key,
         "mime_type": mime_type, "size_bytes": size_bytes, "source": source,
         "extraction_status": extraction_status, "created_at": now_iso(),
         "ttl": int(time.time()) + ttl_seconds,
@@ -231,14 +232,38 @@ def get_attachment(uid, aid) -> dict | None:
     return None
 
 
+def get_attachment_in_conv(cid, aid) -> dict | None:
+    """대화 안의 첨부를 키로 바로 읽는다 (대화 소유 확인은 호출하는 쪽에서 이미 끝난 경우)."""
+    item = dynamo.get_item(keys.conv_pk(cid), keys.att_sk(aid))
+    if item is None or (item.get("ttl") and item["ttl"] < int(time.time())):
+        return None
+    return strip_keys(item)
+
+
 def list_attachments(cid) -> list[dict]:
     """AP12"""
     return [strip_keys(i) for i in dynamo.query_partition(keys.conv_pk(cid), keys.ATT_PREFIX)]
 
 
-def update_attachment(cid, aid, **fields) -> None:
-    """추출 상태, 추출 텍스트 S3 키 등 갱신."""
-    dynamo.update(keys.conv_pk(cid), keys.att_sk(aid), set_={k: v for k, v in fields.items() if v is not None})
+def update_attachment(cid, aid, **fields) -> bool:
+    """추출 상태, 추출 텍스트 키 등 갱신. None 값은 속성을 지운다.
+    처리 도중 첨부가 취소(삭제)됐으면 다시 만들지 않고 False를 돌려준다."""
+    set_ = {k: v for k, v in fields.items() if v is not None}
+    remove = [k for k, v in fields.items() if v is None]
+    try:
+        dynamo.table().update_item(
+            Key={"PK": keys.conv_pk(cid), "SK": keys.att_sk(aid)},
+            ConditionExpression="attribute_exists(PK)",
+            **dynamo.update_expr(set_=set_ or None, remove=remove or None),
+        )
+    except dynamo.client().exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def delete_attachment_in_conv(cid, aid) -> None:
+    """키로 바로 지운다 (GSI는 최종 일관성이라 방금 만든 첨부가 아직 안 보일 수 있다)."""
+    dynamo.table().delete_item(Key={"PK": keys.conv_pk(cid), "SK": keys.att_sk(aid)})
 
 
 def delete_attachment(uid, aid) -> dict | None:
@@ -246,31 +271,47 @@ def delete_attachment(uid, aid) -> dict | None:
     if att is None:
         return None
     dynamo.table().delete_item(Key={"PK": keys.conv_pk(att["chat_id"]), "SK": keys.att_sk(aid)})
-    return att  # s3_key로 파일 삭제는 호출하는 쪽에서
+    return att  # storage_key로 파일 삭제는 호출하는 쪽에서
 
 
 # ------------------------------------------------------------------ 검색 (AP22)
-def search(uid, query: str, limit: int = 20) -> list[dict]:
+SNIPPET_CONTEXT_CHARS = 30
+
+
+def _snippet(content: str, query: str, attachment_name: str | None) -> str:
+    """검색어가 나오는 위치 앞뒤로 자른다 (기존 chat/search.py와 같은 규칙)."""
+    idx = content.lower().find(query.lower())
+    if idx == -1:
+        if attachment_name and query.lower() in attachment_name.lower():
+            return f"첨부파일: {attachment_name}"
+        return content[:80] + ("..." if len(content) > 80 else "")
+    start = max(0, idx - SNIPPET_CONTEXT_CHARS)
+    end = min(len(content), idx + len(query) + SNIPPET_CONTEXT_CHARS)
+    snippet = content[start:end]
+    return ("..." if start > 0 else "") + snippet + ("..." if end < len(content) else "")
+
+
+def search(uid, query: str, limit: int = 50) -> list[dict]:
     """1차 배포용 앱 내 검색: 제목, 메시지 본문, 첨부 파일명 부분 일치(대소문자 무시).
-    대화당 1건, 일치 횟수가 많은 순. 대화 수가 많아지면 OpenSearch로 옮긴다."""
+    대화당 1건(가장 많이 일치한 메시지), 일치가 많은 순. 대화 수가 많아지면 OpenSearch로 옮긴다."""
     q = query.strip().lower()
     if not q:
         return []
     results = []
     for conv in list_conversations(uid):
+        title_hit = q in (conv.get("title") or "").lower()
         best = None
-        title = (conv.get("title") or "")
-        if q in title.lower():
-            best = {"score": 3 + title.lower().count(q), "snippet": title, "matched_role": None}
         for m in get_conversation_page(conv["id"]):
             text = m.get("content") or ""
-            names = " ".join(a["original_name"] for a in m.get("attachments", []))
-            hits = text.lower().count(q) + names.lower().count(q)
-            if hits and (best is None or hits > best["score"]):
-                pos = text.lower().find(q)
-                snippet = text[max(0, pos - 40): pos + 80] if pos >= 0 else names
-                best = {"score": hits, "snippet": snippet, "matched_role": m["role"]}
+            att_name = next((a["original_name"] for a in m.get("attachments", [])
+                             if q in a["original_name"].lower()), None)
+            score = text.lower().count(q) + (1 if att_name else 0) + (1 if title_hit else 0)
+            if score and (best is None or score > best[0]):
+                best = (score, m["role"], _snippet(text, query.strip(), att_name))
+        if best is None and title_hit:  # 메시지가 아직 없는 대화도 제목으로는 찾는다
+            best = (1, "user", conv.get("title") or "")
         if best:
-            results.append({"conversation_id": conv["id"], "title": conv.get("title"), **best})
-    results.sort(key=lambda r: r["score"], reverse=True)
-    return [{k: v for k, v in r.items() if k != "score"} for r in results[:limit]]
+            results.append({"conversation_id": conv["id"], "title": conv.get("title"),
+                            "snippet": best[2], "matched_role": best[1], "_score": best[0]})
+    results.sort(key=lambda r: r["_score"], reverse=True)
+    return [{k: v for k, v in r.items() if k != "_score"} for r in results[:limit]]
