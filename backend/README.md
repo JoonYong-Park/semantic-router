@@ -44,14 +44,12 @@ docker compose -f docker-compose.dev.yml exec backend python scripts/smoke_test.
 - 업로드 파일은 저장소 루트 `uploads/`에 쌓인다 (git 제외).
 - 서버(온프레미스) 배포는 `docker-compose.yml` + `scripts/deploy.sh`로, 같은 이미지를 gunicorn으로 띄운다.
 
-## AWS 배포 (아직 실행 전)
+## AWS 배포
 
-`zappa_settings.example.json`을 `zappa_settings.json`으로 복사해 `CHANGE-ME`를 채운 뒤,
-AWS 자격 증명이 있는 Python 3.12 환경에서:
+Lambda(컨테이너 이미지) + API Gateway + DynamoDB + S3. 구조와 근거는 [docs/ko/AWS_DEPLOY.md](../docs/ko/AWS_DEPLOY.md).
 
 ```bash
-pip install -r requirements-dev.txt
-DYNAMODB_ENDPOINT= python scripts/create_table.py   # AWS에 테이블 생성 (최초 1회)
-zappa deploy dev
-zappa update dev   # 이후 배포
+# 저장소 루트에서. 필요한 것: Docker, AWS CLI, `joomini` 프로필
+bash backend/scripts/deploy_lambda.sh            # 처음 (zappa deploy)
+bash backend/scripts/deploy_lambda.sh update     # 이후 (zappa update)
 ```
