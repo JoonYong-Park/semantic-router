@@ -18,6 +18,7 @@ import csv
 import io
 import json
 import logging
+import os
 import shutil
 import threading
 import uuid
@@ -88,9 +89,18 @@ def new_file_key(folder: str, ext: str) -> tuple[str, str]:
     return fid, f"{folder}/{fid}.{ext}"
 
 
+ON_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+
+
 def run_in_background(fn, *args) -> None:
-    """응답을 먼저 돌려주고 느린 작업(추출, 제목 생성)을 이어서 한다.
-    로컬 Flask 서버용. Lambda에서는 응답 뒤 실행이 멈추므로 Zappa @task로 바꾼다."""
+    """응답을 먼저 돌려주고 느린 작업(추출, 메모리 추출)을 이어서 한다.
+
+    Lambda는 응답을 보낸 뒤 실행 환경을 멈추기 때문에, 스레드로 넘기면 작업이 끝나지 않는다.
+    그래서 Lambda에서는 요청 안에서 바로 실행한다(업로드 응답이 추출만큼 늦어짐).
+    응답을 먼저 주는 방식으로 되돌리려면 Zappa @task(비동기 Lambda 호출)로 바꾼다."""
+    if ON_LAMBDA:
+        fn(*args)
+        return
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
@@ -152,21 +162,28 @@ def extract_file(item: dict, folder: str) -> dict:
     stored = storage.path(item["storage_key"])
     try:
         final_path, final_mime, blocks, status = _extract_sync(
-            ext, stored, storage.path(folder), item["mime_type"], item["original_name"]
+            ext, stored, storage.local_dir(folder), item["mime_type"], item["original_name"]
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("첨부파일 백그라운드 처리 실패 (%s): %s", item["original_name"], exc, exc_info=True)
         final_path, final_mime, blocks, status = stored, item["mime_type"], None, "failed"
 
+    final_key = storage.key_of(final_path)
     fields = {
-        "storage_key": storage.key_of(final_path),
+        "storage_key": final_key,
         "mime_type": final_mime,
         "extraction_status": status,
     }
+    if final_key != item["storage_key"]:
+        # 변환본(PNG, 스캔본 PDF)을 저장소(S3)에도 올린다. 이미지 원본은 변환 후 쓰지 않으므로 지운다.
+        storage.upload_local(final_key)
+        if ext in IMAGE_EXTS:
+            storage.delete(item["storage_key"])
     if blocks is not None:
         for b in blocks:
             if b.get("type") == "image" and b.get("path"):
                 b["key"] = storage.key_of(Path(b.pop("path")))
+                storage.upload_local(b["key"])
         extracted_key = f"{folder}/{item['id']}.extracted.json"
         storage.write(extracted_key, json.dumps(blocks, ensure_ascii=False).encode("utf-8"))
         fields["extracted_key"] = extracted_key
@@ -301,9 +318,10 @@ def convert_for_preview(stored_path: Path, folder: str, item_id) -> Path | None:
     pdf_path = extractor._convert_to_pdf_with_libreoffice(stored_path)
     if pdf_path is None:
         return None
-    final = storage.path(preview_key(folder, item_id))
-    final.parent.mkdir(parents=True, exist_ok=True)
+    key = preview_key(folder, item_id)
+    final = storage.local_dir(f"{folder}/previews") / f"{item_id}.pdf"
     tmp = final.with_name(f".{item_id}.pdf.tmp")
     shutil.move(pdf_path, tmp)
     tmp.rename(final)
+    storage.upload_local(key)
     return final

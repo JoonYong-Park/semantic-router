@@ -17,6 +17,7 @@ import { createConversation, deleteAttachment, uploadAttachment } from "@/lib/ap
 import { Mode, PendingAttachment, Size } from "@/lib/types";
 import { stashPendingMessage } from "@/lib/pendingMessage";
 
+import { DEFAULT_MODE } from "@/lib/config";
 let idCounter = 0;
 const nextId = () => `${Date.now()}-${idCounter++}`;
 
@@ -24,7 +25,7 @@ export default function Home() {
   const router = useRouter();
   const { setConversations, setIsStreaming } = useAppData();
 
-  const [mode, setMode] = useState<Mode>("auto");
+  const [mode, setMode] = useState<Mode>(DEFAULT_MODE);
   const [size, setSize] = useState<Size>("medium");
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);

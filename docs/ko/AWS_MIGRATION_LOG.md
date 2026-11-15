@@ -99,16 +99,28 @@ docker compose -f docker-compose.serverless.yml run --rm flask python scripts/sm
 
 ---
 
+## 2026-11-15 4차 작업: AWS 첫 배포
+
+자세한 구조, 결정 근거, 실측 수치, 한계는 [AWS_DEPLOY.md](AWS_DEPLOY.md).
+
+- 백엔드: API Gateway + Lambda(컨테이너 이미지, Zappa) + DynamoDB + S3. auto 라우팅은 끈 상태(`ROUTER_MODELS=off`)
+- 프론트: Lambda(Lambda Web Adapter) + Function URL. 기본 모드는 OpenAI 수동 선택
+- 코드 변경: `storage.py` S3 지원, Lambda에서는 백그라운드 작업을 요청 안에서 처리, 프론트 기본 모드 빌드 옵션, `backend/Dockerfile`에 `lambda` 단계, 배포 스크립트 2개
+- 확인: 배포된 주소에서 `/health`, 실제 채팅(답변 저장, 제목 생성), 브라우저 전체 흐름, CORS(프론트 주소만 허용)
+- 보호 장치: 예산 알림(월 $10), API Gateway 요청 제한(초당 2건)
+
+---
+
 ## 남은 일 (다음 순서)
 
 | 순서 | 할 일 | 비고 |
 |---|---|---|
-| 1 | AWS 계정 준비: 배포용 IAM 사용자, AWS CLI, Zappa 배포 버킷 | 사용자 확인 필요 (계정과 비용) |
-| 2 | 첫 `zappa deploy dev` | 지금은 앱이 시작할 때 torch를 import해서(routing/classifier) zip 배포가 안 된다. 5번을 먼저 정하거나 그 import를 지연시켜야 한다 |
+| 1 | ~~AWS 계정 준비~~ | 4차 작업에서 완료 |
+| 2 | ~~첫 `zappa deploy dev`~~ | 4차 작업에서 완료 (컨테이너 이미지, auto 라우팅 끔) |
 | 3 | ~~프로젝트, 대화 CRUD 엔드포인트 이전~~ | 2차 작업에서 완료 (전체 API) |
-| 4 | 파일 저장을 S3로 (첨부, 프로젝트 파일, 아바타). 업로드는 presigned URL | 추출 텍스트도 S3 (아이템 400KB 제한) |
+| 4 | 파일 저장을 S3로 | 저장은 완료(4차). 남은 것: 업로드를 presigned URL로 (Lambda 요청 6MB 제한) |
 | 5 | 라우터 모델 결정: torch + mmBERT + e5-large(3GB 이상)는 zip(250MB)에 안 들어감 | 임베딩 API 전환 또는 컨테이너 이미지. 바꾼 뒤 `notebooks/eval`로 재검증 |
 | 6 | 채팅 전송을 비동기 작업 + 폴링으로 (SSE 대체) | 프론트 `lib/api.ts` 수신부만 수정 |
 | 7 | 백그라운드 작업 이전: 제목 생성, 메모리 추출(하루 2회) → Zappa `@task`, `events` | |
 | 8 | Cognito 로그인, `auth.current_user_id()` 교체 | 라우트 코드는 그대로 |
-| 9 | 프론트 배포 (Amplify 또는 S3 + CloudFront), API 주소를 API Gateway로 | |
+| 9 | ~~프론트 배포~~ | 4차 작업에서 완료 (Lambda + Function URL) |
