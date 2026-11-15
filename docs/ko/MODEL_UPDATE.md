@@ -83,9 +83,9 @@ docker compose -f docker-compose.dev.yml logs --tail 30 backend   # models.json 
 - [ ] 문서 요청("회의록을 docx 파일로 만들어줘")에서 `file` 이벤트가 옵니다. strict 툴 스키마와 큰 출력 상한을 쓰는 경로입니다.
 - [ ] 첨부한 이미지와 PDF의 내용을 실제로 읽습니다.
 - [ ] 긴 답이 중간에 잘리지 않습니다. 추론 모델은 특히 주의하세요(아래 Anthropic 참고).
-- [ ] 답변 행의 `input_tokens` / `output_tokens`가 0이 아닙니다.
+- [ ] 오늘 사용량에 새 모델이 0이 아닌 입력/출력 토큰으로 나옵니다.
   ```bash
-  docker exec postgres psql -U asap -d asap -c "select model_used, input_tokens, output_tokens from messages where role='assistant' order by created_at desc limit 5;"
+  curl -s "http://localhost:8000/usage/stats?period=today" | python3 -m json.tool   # by_model
   ```
 
 OpenAI small을 바꿨다면 제목 생성과 메모리 추출도 한 번씩 확인하세요. 둘 다 이 모델로 돕니다.

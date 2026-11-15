@@ -83,9 +83,9 @@ Don't just test a plain chat. Each vendor has broken differently on **tool calls
 - [ ] A document request ("회의록을 docx 파일로 만들어줘") produces a `file` event. This uses strict tool schemas and the larger output limit.
 - [ ] An image attachment and a PDF attachment are actually read.
 - [ ] A long answer isn't cut off, especially on thinking models (see below).
-- [ ] The answer row has non-zero `input_tokens` / `output_tokens`:
+- [ ] Today's usage shows the new model with non-zero input / output tokens:
   ```bash
-  docker exec postgres psql -U asap -d asap -c "select model_used, input_tokens, output_tokens from messages where role='assistant' order by created_at desc limit 5;"
+  curl -s "http://localhost:8000/usage/stats?period=today" | python3 -m json.tool   # by_model
   ```
 
 If OpenAI small changed, also check one title generation and one memory extraction, since those run on it.

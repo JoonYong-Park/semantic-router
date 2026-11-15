@@ -54,42 +54,41 @@ EDIT_DOCUMENT_DESCRIPTION = (
 
 async def _resolve_file(ctx: ToolContext, attachment_id: str):
     """이 채팅의 첨부(업로드/생성) 또는 이 채팅이 속한 프로젝트의 참고자료만 허용한다.
-    반환: (원본 바이트, 표시 이름, 확장자, Attachment id 또는 None, 출처 설명)."""
-    from pathlib import Path
+    반환: (원본 바이트, 표시 이름, 확장자, 첨부 id 또는 None, 출처 설명)."""
     from uuid import UUID as _UUID
 
-    from app.attachments import service as attachment_service
+    from app import storage
+    from app.db.repo import conversations as conv_repo
+    from app.db.repo import projects as project_repo
     from app.documents import editor
-    from app.core.models import Attachment, ProjectFile
 
     try:
-        file_id = _UUID(str(attachment_id).strip())
+        file_id = str(_UUID(str(attachment_id).strip()))
     except ValueError:
         raise editor.EditError(f"attachment_id {attachment_id!r}가 올바른 id 형식이 아닙니다. 대화 기록의 (id=...) 값을 그대로 쓰세요")
-    async with ctx.session_factory() as session:
-        row = await session.get(Attachment, file_id)
-        source = "attachment"
-        if row is None or row.chat_id != ctx.conversation_id:
-            row = await session.get(ProjectFile, file_id)
-            source = "project_file"
-            if row is None or ctx.project_id is None or row.project_id != ctx.project_id:
-                raise editor.EditError(f"id {attachment_id}인 파일을 이 대화(또는 이 프로젝트 참고자료)에서 찾을 수 없습니다")
-    name = row.original_name
+    row = conv_repo.get_attachment_in_conv(ctx.conversation_id, file_id)
+    source = "attachment"
+    if row is None:
+        row = project_repo.get_project_file(ctx.user_id, file_id)
+        source = "project_file"
+        if row is None or ctx.project_id is None or row["project_id"] != str(ctx.project_id):
+            raise editor.EditError(f"id {attachment_id}인 파일을 이 대화(또는 이 프로젝트 참고자료)에서 찾을 수 없습니다")
+    name = row["original_name"]
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if ext == "hwp":
         raise editor.EditError("hwp(구형 한글) 파일은 수정할 수 없습니다. 한글에서 hwpx로 저장(변환)한 뒤 다시 올려 주세요")
     if ext not in editor.supported_formats():
         raise editor.EditError(f"{name}은(는) 수정할 수 없는 형식입니다. 수정 가능 형식: {', '.join(editor.supported_formats())}")
-    path = attachment_service._resolve_under_upload_root(Path(row.stored_path))
+    path = storage.path(row["storage_key"])
     if path.suffix.lower().lstrip(".") != ext:
-        # 텍스트가 거의 없는 문서는 업로드 시 PDF로 변환돼 stored_path가 바뀌지만,
-        # 원본은 같은 폴더에 "{id}.{원래 확장자}"로 남아 있다(attachment_service._delete_stored_files 참고).
-        original = path.with_name(f"{row.id}.{ext}")
+        # 텍스트가 거의 없는 문서는 업로드 시 PDF로 변환돼 storage_key가 바뀌지만,
+        # 원본은 같은 폴더에 "{id}.{원래 확장자}"로 남아 있다(services/files.delete_files 참고).
+        original = path.with_name(f"{row['id']}.{ext}")
         if not original.exists():
             raise editor.EditError(f"{name}의 원본 파일을 찾을 수 없어 수정할 수 없습니다(스캔본으로 PDF 변환됨)")
-        path = attachment_service._resolve_under_upload_root(original)
+        path = original
     data = await asyncio.to_thread(path.read_bytes)
-    return data, name, ext, (row.id if source == "attachment" else None), source
+    return data, name, ext, (row["id"] if source == "attachment" else None), source
 
 
 async def _execute_inspect_document(arguments: dict, ctx: ToolContext) -> ToolResult:
@@ -105,19 +104,13 @@ async def _execute_inspect_document(arguments: dict, ctx: ToolContext) -> ToolRe
 
 
 async def _unique_edit_name(ctx: ToolContext, original_name: str) -> str:
-    from sqlalchemy import select
-
-    from app.core.models import Attachment
+    from app.db.repo import conversations as conv_repo
 
     base, _, ext = original_name.rpartition(".")
     base = base or original_name
     # 수정본을 또 수정하면 "_수정_수정"이 되지 않게 기존 접미사는 뗀다
     base = re.sub(r"_수정\d*$", "", base)
-    async with ctx.session_factory() as session:
-        result = await session.execute(
-            select(Attachment.original_name).where(Attachment.chat_id == ctx.conversation_id)
-        )
-        existing = set(result.scalars().all())
+    existing = {a["original_name"] for a in conv_repo.list_attachments(ctx.conversation_id)}
     candidate, n = f"{base}_수정.{ext}", 2
     while candidate in existing:
         candidate = f"{base}_수정{n}.{ext}"
@@ -126,9 +119,9 @@ async def _unique_edit_name(ctx: ToolContext, original_name: str) -> str:
 
 
 async def _execute_edit_document(arguments: dict, ctx: ToolContext) -> ToolResult:
-    from app.attachments import service as attachment_service
+    from app.services import generated as attachment_service
     from app.documents import editor
-    from app.schemas import AttachmentOut
+    from app.serializers import attachment_out
 
     generated = ctx.turn_state.setdefault("generated_attachment_ids", [])
     if len(generated) >= MAX_GENERATED_FILES_PER_TURN:
@@ -156,15 +149,15 @@ async def _execute_edit_document(arguments: dict, ctx: ToolContext) -> ToolResul
     }
     try:
         attachment = await attachment_service.save_generated_file(
-            ctx.conversation_id, display_name, ext, new_bytes, meta, source_attachment_id=source_id
+            ctx.user_id, ctx.conversation_id, display_name, ext, new_bytes, meta, source_attachment_id=source_id
         )
     except ValueError as exc:
         return ToolResult(content=str(exc), is_error=True)
-    generated.append(attachment.id)
-    ctx.emit({"type": "file", "attachment": AttachmentOut.model_validate(attachment).model_dump(mode="json")})
+    generated.append(attachment["id"])
+    ctx.emit({"type": "file", "attachment": attachment_out(attachment)})
     payload = {
         "ok": True,
-        "file_id": str(attachment.id),
+        "file_id": str(attachment["id"]),
         "filename": display_name,
         "new_doc_revision": editor.revision_of(new_bytes),
         "applied": summary,
@@ -173,7 +166,7 @@ async def _execute_edit_document(arguments: dict, ctx: ToolContext) -> ToolResul
                  "이 수정본을 또 고치려면 새 file_id로 inspect_document부터 다시 호출할 것."),
     }
     return ToolResult(content=json.dumps(payload, ensure_ascii=False),
-                      metadata={"generated_attachment_id": attachment.id})
+                      metadata={"generated_attachment_id": attachment["id"]})
 
 
 INSPECT_DOCUMENT = ToolSpec(

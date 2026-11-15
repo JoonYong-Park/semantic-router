@@ -1,26 +1,16 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
+# Lambda 앱에 들어가는 의존성 (Flask + DynamoDB + 모델 호출 + 문서 처리)
+flask==3.1.0
+boto3==1.35.90
 httpx==0.27.2
-pydantic==2.9.2
-torch==2.5.1
-transformers==4.57.6
-huggingface-hub==0.36.2
-numpy==1.26.4
-
-# 채팅방 영속화 + 컨텍스트 토큰 계산
-sqlalchemy==2.0.36
-asyncpg==0.30.0
 tiktoken==0.8.0
-
-# 토큰 사용량 집계 (Asia/Seoul 기준 시간대 변환) - slim 이미지엔 시스템 tzdata가
-# 없을 수 있어 zoneinfo가 여기서 대신 읽도록 명시적으로 설치
+# slim 이미지/Lambda에는 시스템 tzdata가 없을 수 있어 zoneinfo가 이걸 읽는다 (KST 계산)
 tzdata==2025.2
 
-# 채팅 첨부파일 (9개 포맷) 업로드/파싱 - dry-run으로 위 스택과 충돌 없음 확인됨
+# 첨부 파일 추출, 문서 생성/수정 (backend/requirements.txt와 같은 버전)
 pillow==12.3.0
 python-docx==1.2.0
 python-pptx==1.0.2
 openpyxl==3.1.5
 pypdf==6.19.0
-python-multipart==0.0.32
 hwp-hwpx-parser==1.0.0
+python-hwpx==6.7.0

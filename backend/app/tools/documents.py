@@ -114,9 +114,9 @@ async def _render_and_save(
     """문서 툴 공통 흐름: 개수 상한 → processing 이벤트 → 렌더링(스레드) →
     저장 + Attachment 등록 → file 이벤트 → ToolResult. 검증 실패와 렌더 예외는
     모델이 고쳐서 다시 부를 수 있게 구체적인 is_error 결과로 돌려준다."""
-    from app.attachments import service as attachment_service
+    from app.services import generated as attachment_service
     from app.documents import generator
-    from app.schemas import AttachmentOut
+    from app.serializers import attachment_out
 
     generated = ctx.turn_state.setdefault("generated_attachment_ids", [])
     if len(generated) >= MAX_GENERATED_FILES_PER_TURN:
@@ -143,29 +143,29 @@ async def _render_and_save(
     }
     try:
         attachment = await attachment_service.save_generated_file(
-            ctx.conversation_id, display_name, result.ext, result.content, meta
+            ctx.user_id, ctx.conversation_id, display_name, result.ext, result.content, meta
         )
     except ValueError as exc:  # 용량 상한 초과
         return ToolResult(content=str(exc), is_error=True)
 
-    generated.append(attachment.id)
+    generated.append(attachment["id"])
     ctx.emit({
         "type": "file",
-        "attachment": AttachmentOut.model_validate(attachment).model_dump(mode="json"),
+        "attachment": attachment_out(attachment),
     })
     payload = {
         "ok": True,
-        "file_id": str(attachment.id),
+        "file_id": str(attachment["id"]),
         "filename": display_name,
         "format": result.ext,
-        "size_bytes": attachment.size_bytes,
+        "size_bytes": attachment["size_bytes"],
         "pages_or_slides": result.pages_or_slides,
         "warnings": result.warnings,
         "note": "파일은 이미 사용자에게 다운로드 카드로 표시됨. 내용을 채팅에 반복하지 말고 간단히 안내만 할 것.",
     }
     return ToolResult(
         content=json.dumps(payload, ensure_ascii=False),
-        metadata={"generated_attachment_id": attachment.id},
+        metadata={"generated_attachment_id": attachment["id"]},
     )
 
 

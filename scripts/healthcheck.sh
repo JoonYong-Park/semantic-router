@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Retrying health check against the backend (FastAPI) /health endpoint.
+# Retrying health check against the backend (Flask) /health endpoint.
 #
 # Usage:
 #   scripts/healthcheck.sh [URL] [MAX_RETRIES] [INTERVAL_SECONDS]

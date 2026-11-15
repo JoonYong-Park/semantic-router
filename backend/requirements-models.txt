@@ -1,0 +1,7 @@
+# auto 라우팅용 로컬 모델(mmBERT 분류기 + multilingual-e5-large). 합쳐서 3GB가 넘어
+# Lambda zip(250MB)에는 들어가지 않는다 - 배포 방식은 따로 정한다 (AWS_MIGRATION_LOG 남은 일 5번).
+# 로컬 개발 이미지에서는 기존 백엔드와 같은 버전으로 설치한다.
+torch==2.5.1
+transformers==4.57.6
+huggingface-hub==0.36.2
+numpy==1.26.4

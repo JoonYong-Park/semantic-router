@@ -19,7 +19,7 @@ events, so no inbound port needs to be open on the deployment server.
    1. Back up the currently running `backend`/`frontend` images with a `:previous` tag
    2. `docker compose build` - build new images
    3. `docker compose up -d` - start new containers
-   4. `scripts/healthcheck.sh` - retry `GET /health` on the backend, up to 10 times, 3s apart
+   4. `scripts/healthcheck.sh` - retry `GET /health` on the backend, up to 40 times (2 minutes), 3s apart. The backend loads torch and checks the DynamoDB table at startup, which can take longer than 30s
    5. If build, startup, or health check fails, automatic rollback runs
 3. The deployment result is written to the GitHub Actions step summary
 
@@ -53,14 +53,14 @@ runner server directly:
 
 `docker-compose.yml`'s `backend` service bind-mounts a host directory (path
 set via `UPLOAD_HOST_DIR` in `.env`, kept out of the repo since it's host-specific)
-to `/app/uploads` (container) for chat file attachments. This does not
+to `/data/uploads` (container) for chat file attachments. This does not
 interact with `scripts/deploy.sh`'s backup/rollback logic:
 
 - The script only tags/restores the **built images** (`semantic-router-backend`,
   `semantic-router-frontend`) as `:previous` — it never touches volumes or
   bind mounts.
 - `UPLOAD_HOST_DIR` points at a plain host directory, not a Docker-managed named
-  volume (unlike `backend_hf_cache`/`postgres_data`). It exists independently
+  volume (unlike `backend_hf_cache`/`dynamodb_data`). It exists independently
   of any container lifecycle, so both a normal redeploy and an automatic
   rollback mount the exact same host path — uploaded files are unaffected
   either way.
@@ -105,3 +105,10 @@ To run just the health check:
 ```bash
 ./scripts/healthcheck.sh http://localhost:8000/health 10 3
 ```
+
+## First deploy after the FastAPI + Postgres → Flask + DynamoDB switch
+
+- **Data is not migrated.** The new backend starts with an empty table in the server's DynamoDB Local (`dynamodb_data` volume). The old Postgres data (`postgres_data` volume) is left in place.
+- **The old `postgres` container keeps running.** It is no longer in `docker-compose.yml`, so compose only warns about an orphan. After the new version is confirmed healthy, remove it by hand with `docker stop postgres && docker rm postgres` (the volume stays).
+- **Automatic rollback does not work for this deploy.** The `:previous` image is the FastAPI image that needs Postgres, which the new `docker-compose.yml` no longer defines, so a rollback cannot pass `/health`. If the deploy fails, check out the previous commit and run `docker compose up -d --build` by hand.
+- `UPLOAD_HOST_DIR` is mounted at `/data/uploads` in the container. Old files stay on disk but are not referenced by the new database.

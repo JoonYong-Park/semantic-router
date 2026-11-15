@@ -1,15 +1,5 @@
-"""시스템 프롬프트에 들어가는 텍스트 조각 - 메모리 토픽 직렬화와 파일 툴 사용 지침."""
-
-import json
-import logging
-
-
-from app.core.models import (
-    ProjectMemory,
-    UserMemory,
-)
-
-logger = logging.getLogger("uvicorn.error")
+"""시스템 프롬프트에 들어가는 텍스트 조각 - 메모리 토픽 직렬화와 파일 툴 사용 지침
+(기존 chat/context.py. 메모리 details가 JSON 문자열이 아니라 리스트로 저장되는 것만 다르다)."""
 
 
 # 문서 툴이나 수정 툴이 노출된 턴에만 시스템 프롬프트 맨 끝에 붙는 사용 지침.
@@ -31,15 +21,10 @@ DOC_TOOLS_GUIDE = (
 )
 
 
-def _memory_topic_to_text(memory: UserMemory | ProjectMemory) -> str:
-    """UserMemory/ProjectMemory 토픽(name/summary/details) 한 건을 시스템
-    프롬프트에 넣을 한 줄(+하위 불릿) 텍스트로 변환한다."""
-    try:
-        details = json.loads(memory.details) if memory.details else []
-    except (json.JSONDecodeError, TypeError):
-        details = []
-    text = f"{memory.name}: {memory.summary}"
+def memory_topic_to_text(topic: dict) -> str:
+    """메모리 토픽(name/summary/details) 한 건을 시스템 프롬프트의 한 줄(+하위 불릿)로."""
+    details = topic.get("details") or []
+    text = f"{topic['name']}: {topic['summary']}"
     if details:
-        detail_lines = "\n".join(f"  · {d}" for d in details)
-        text = f"{text}\n{detail_lines}"
+        text = text + "\n" + "\n".join(f"  · {d}" for d in details)
     return text

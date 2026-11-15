@@ -89,7 +89,9 @@ def load_complexity_model() -> None:
 
 
 def is_ready() -> bool:
-    return _model is not None
+    # 모델 객체만 보면 참조 문장 임베딩(_ref_emb) 계산 중에도 준비됨으로 보여서,
+    # 그 사이 들어온 auto 요청이 complexity_score()에서 실패했다. 마지막 단계까지 확인한다.
+    return _model is not None and _ref_label is not None
 
 
 def _votes(query_emb: Tensor) -> Tensor:
