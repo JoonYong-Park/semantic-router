@@ -1,41 +1,63 @@
+# 로컬 개발 환경: Flask 백엔드 + DynamoDB Local + Next.js 프론트.
+#   docker compose -f docker-compose.dev.yml up -d --build
+# 화면 http://localhost:3000, API http://localhost:8000, DynamoDB 확인 http://localhost:8002
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: postgres
-    environment:
-      POSTGRES_USER: asap
-      POSTGRES_PASSWORD: asap
-      POSTGRES_DB: asap
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    # -sharedDb: 자격 증명/리전과 상관없이 DB 파일 하나를 공유한다.
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal/data"
+    user: root
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - dynamodb_data:/home/dynamodblocal/data
     ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U asap"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      - "8001:8000"
     restart: unless-stopped
+
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin:latest
+    container_name: dynamodb-admin
+    environment:
+      DYNAMO_ENDPOINT: http://dynamodb:8000
+      AWS_REGION: ap-northeast-2
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    depends_on:
+      - dynamodb
+    ports:
+      - "8002:8001"   # 브라우저에서 테이블과 아이템 확인
 
   backend:
     build:
       context: ./backend
     container_name: backend
+    # 코드를 마운트하고 개발 서버(자동 재시작)로 띄운다. 테이블이 없으면 먼저 만든다.
+    command: sh -c "python scripts/create_table.py && exec flask run --host 0.0.0.0 --port 8000"
+    # 코드 수정으로 개발 서버가 재시작될 때 torch 스레드 때문에 프로세스가 비정상 종료될 수 있어
+    # (terminate called without an active exception) 자동으로 다시 띄운다.
+    restart: unless-stopped
     env_file:
-      - .env
+      - .env   # 모델 API 키
     environment:
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+      DYNAMODB_TABLE: joomini
+      AWS_REGION: ap-northeast-2
+      # DynamoDB Local은 키 값이 영문자와 숫자만이면 아무 값이나 받는다.
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
       FRONTEND_ORIGIN: http://localhost:3000
-      DATABASE_URL: postgresql+asyncpg://asap:asap@postgres:5432/asap
-      ENABLE_DOCS: "1"
+      FLASK_APP: app:create_app
+      FLASK_DEBUG: "1"
+      # 개발 서버 리로더가 torch 같은 설치 패키지 수만 개 파일까지 감시하지 않게 한다.
+      FLASK_RUN_EXCLUDE_PATTERNS: "/usr/local/lib/*"
     volumes:
-      - backend_hf_cache:/app/hf-cache
-      - ./uploads:/app/uploads
+      - ./backend:/app
+      - ./uploads:/data/uploads
+      - backend_hf_cache:/hf-cache   # auto 라우팅 모델 캐시 (3GB+)
     depends_on:
-      postgres:
-        condition: service_healthy
+      - dynamodb
     ports:
       - "8000:8000"
-    restart: unless-stopped
 
   frontend:
     build:
@@ -50,5 +72,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  dynamodb_data:
   backend_hf_cache:
-  postgres_data:

@@ -59,8 +59,8 @@ def _encode_image(png_bytes: bytes, fmt: str) -> bytes:
 
 
 async def _execute_generate_image(arguments: dict, ctx: ToolContext) -> ToolResult:
-    from app.attachments import service as attachment_service
-    from app.schemas import AttachmentOut
+    from app.services import generated as attachment_service
+    from app.serializers import attachment_out
 
     prompt = arguments.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -112,22 +112,22 @@ async def _execute_generate_image(arguments: dict, ctx: ToolContext) -> ToolResu
     display_name = f"이미지_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}.{fmt}"
     meta = {"kind": "image", "tool": "generate_image", "model": model, "size": size, "quality": quality, "format": fmt}
     try:
-        attachment = await attachment_service.save_generated_file(ctx.conversation_id, display_name, fmt, data, meta)
+        attachment = await attachment_service.save_generated_file(ctx.user_id, ctx.conversation_id, display_name, fmt, data, meta)
     except ValueError as exc:  # 25MB 상한
         return ToolResult(content=str(exc), is_error=True)
 
     ctx.turn_state["image_count"] = count + 1
-    ctx.emit({"type": "file", "attachment": AttachmentOut.model_validate(attachment).model_dump(mode="json")})
+    ctx.emit({"type": "file", "attachment": attachment_out(attachment)})
     payload = {
         "ok": True,
-        "file_id": str(attachment.id),
+        "file_id": str(attachment["id"]),
         "filename": display_name,
         "size": size,
         "note": "이미지는 이미 사용자에게 카드로 표시됨. URL이나 이미지 링크를 만들지 말고 한두 문장으로만 안내할 것.",
     }
     return ToolResult(
         content=json.dumps(payload, ensure_ascii=False),
-        metadata={"generated_attachment_id": attachment.id},
+        metadata={"generated_attachment_id": attachment["id"]},
     )
 
 

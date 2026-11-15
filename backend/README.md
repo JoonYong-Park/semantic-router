@@ -1,8 +1,8 @@
-# backend-flask
+# backend
 
-Joomini 백엔드를 Lambda + Zappa + DynamoDB로 옮긴 Flask 버전이다. 프론트가 쓰는 API는
-전부 옮겼고(URL과 응답 형태는 기존 FastAPI와 같음), 로컬에서는 DynamoDB Local로 돈다.
-기존 FastAPI 백엔드(`../backend`) 코드는 참고용으로 남아 있다.
+Joomini 백엔드 (Flask + DynamoDB). Lambda + Zappa 배포를 목표로 FastAPI + Postgres에서 옮겼다.
+URL과 응답 형태는 FastAPI 시절과 같아서 프론트는 그대로다. 로컬과 온프레미스 서버에서는
+DynamoDB Local로 돈다. 이전 FastAPI 코드는 git 기록(`main` 브랜치)에 있다.
 
 ```
 app/
@@ -25,27 +25,26 @@ app/
 ## 로컬 실행
 
 ```bash
-# 저장소 루트에서
-docker compose -f docker-compose.serverless.yml up -d --build
-docker compose -f docker-compose.serverless.yml run --rm flask python scripts/create_table.py
-curl -s localhost:5001/health
-docker compose -f docker-compose.serverless.yml run --rm flask python scripts/smoke_test.py
+# 저장소 루트에서. 테이블은 백엔드 컨테이너가 시작할 때 없으면 만든다.
+docker compose -f docker-compose.dev.yml up -d --build
+curl -s localhost:8000/health
+docker compose -f docker-compose.dev.yml exec backend python scripts/smoke_test.py
 ```
-
-- 모델 API 키는 저장소 루트 `.env`를 그대로 읽는다.
-- auto 라우팅 모델(3GB+)은 기존 개발 환경이 받아 둔 Docker 볼륨(`semantic-router_backend_hf_cache`)을
-  같이 쓴다. 처음 뜰 때 로드에 2~3분 걸리고, 그동안 `/health`의 `*_ready`가 false이며
-  수동 모델 선택은 바로 된다.
-- 업로드 파일은 `../uploads-flask/`에 쌓인다 (기존 `uploads/`와 분리, git 제외).
 
 | 서비스 | 주소 |
 |---|---|
-| 화면 (Flask를 쓰는 프론트) | http://localhost:3001 |
-| Flask API | http://localhost:5001 |
+| 화면 | http://localhost:3000 |
+| API | http://localhost:8000 |
 | DynamoDB Local | http://localhost:8001 |
 | DynamoDB Admin (GUI) | http://localhost:8002 |
 
-## 배포 (아직 실행 전)
+- 모델 API 키는 저장소 루트 `.env`를 읽는다.
+- auto 라우팅 모델(3GB+)은 Docker 볼륨 `semantic-router_backend_hf_cache`에 받아 둔다. 처음 뜰 때 로드에
+  2~3분 걸리고, 그동안 `/health`의 `*_ready`가 false이며 수동 모델 선택은 바로 된다.
+- 업로드 파일은 저장소 루트 `uploads/`에 쌓인다 (git 제외).
+- 서버(온프레미스) 배포는 `docker-compose.yml` + `scripts/deploy.sh`로, 같은 이미지를 gunicorn으로 띄운다.
+
+## AWS 배포 (아직 실행 전)
 
 `zappa_settings.example.json`을 `zappa_settings.json`으로 복사해 `CHANGE-ME`를 채운 뒤,
 AWS 자격 증명이 있는 Python 3.12 환경에서:

@@ -1,6 +1,6 @@
 """`joomini` 테이블과 GSI 3개를 만든다. 로컬(DynamoDB Local)과 AWS에 같은 구조로.
 
-로컬:  docker compose -f docker-compose.serverless.yml run --rm flask python scripts/create_table.py
+로컬:  docker compose -f docker-compose.dev.yml exec backend python scripts/create_table.py (컨테이너 시작 때 자동으로도 실행됨)
 AWS:   DYNAMODB_ENDPOINT를 비우고 AWS 자격 증명이 있는 셸에서 python scripts/create_table.py
        (--recreate는 로컬에서만 허용한다. 실제 데이터가 지워지기 때문)
 """

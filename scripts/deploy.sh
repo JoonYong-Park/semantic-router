@@ -26,7 +26,8 @@ COMPOSE_FILE="docker-compose.yml"
 SERVICES=(backend frontend)
 
 HEALTH_URL="${HEALTH_URL:-http://localhost:8000/health}"
-HEALTH_RETRIES="${HEALTH_RETRIES:-10}"
+# 백엔드가 시작할 때 torch와 라우터 코드를 불러오고 테이블을 확인해서 30초보다 오래 걸릴 수 있다.
+HEALTH_RETRIES="${HEALTH_RETRIES:-40}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-3}"
 
 compose() {

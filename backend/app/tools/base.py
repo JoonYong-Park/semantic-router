@@ -8,7 +8,6 @@
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
-from uuid import UUID
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -20,10 +19,9 @@ class ToolContext:
     바로 내보낼 때 쓴다(예: 검색 시작 시점의 searching) - 실행이 끝난 뒤가
     아니라 실행 중에 프론트에 보여야 하는 진행 표시용."""
 
-    conversation_id: UUID
-    project_id: UUID | None
-    user_id: UUID
-    session_factory: Callable[[], Any]
+    conversation_id: str
+    project_id: str | None
+    user_id: str
     # 한 턴(요청) 안의 모든 툴 호출이 공유하는 상태 - 예: 생성 파일 개수 상한
     turn_state: dict
     emit: Callable[[dict], None]

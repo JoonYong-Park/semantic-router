@@ -1,6 +1,6 @@
 """DynamoDB Local에서 repo 계층의 조회 패턴(AP1~AP23)을 실제로 호출해 확인한다.
 
-    docker compose -f docker-compose.serverless.yml run --rm flask python scripts/smoke_test.py
+    docker compose -f docker-compose.dev.yml exec backend python scripts/smoke_test.py
 
 테스트마다 새 사용자 id를 써서 기존 로컬 데이터와 섞이지 않고, 끝나면 만든 데이터를 지운다.
 실제 AWS 테이블에서는 돌리지 않는다(DYNAMODB_ENDPOINT가 없으면 중단).
