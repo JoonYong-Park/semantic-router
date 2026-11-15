@@ -9,8 +9,23 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# 채팅 기본 모드 (비우면 auto). auto 라우팅을 끈 배포에서는 openai 등 수동 모드로.
+ARG NEXT_PUBLIC_DEFAULT_MODE=
+ENV NEXT_PUBLIC_DEFAULT_MODE=$NEXT_PUBLIC_DEFAULT_MODE
 RUN npm run build
 
+# AWS Lambda용: 같은 Next.js 서버를 Lambda Web Adapter가 HTTP 요청으로 연결해 준다.
+#   docker build --target lambda --build-arg NEXT_PUBLIC_API_URL=https://... frontend
+FROM node:20-slim AS lambda
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 AWS_LWA_PORT=3000
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+CMD ["node", "server.js"]
+
+# 기본 (로컬, 온프레미스)
 FROM node:20-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production

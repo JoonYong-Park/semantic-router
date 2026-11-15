@@ -29,6 +29,7 @@ import { isDifferentDay } from "@/lib/dateFormat";
 import { popPendingMessage } from "@/lib/pendingMessage";
 import { ChatMessage, Mode, PendingAttachment, SendMessageBody, Size } from "@/lib/types";
 
+import { DEFAULT_MODE } from "@/lib/config";
 type Phase = "idle" | "waiting-meta" | "streaming";
 
 let idCounter = 0;
@@ -41,7 +42,7 @@ export default function ConversationPage() {
   const { refreshConversations, setIsStreaming } = useAppData();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [mode, setMode] = useState<Mode>("auto");
+  const [mode, setMode] = useState<Mode>(DEFAULT_MODE);
   const [size, setSize] = useState<Size>("medium");
   const [input, setInput] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");

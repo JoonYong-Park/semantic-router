@@ -83,7 +83,10 @@ async def _resolve_file(ctx: ToolContext, attachment_id: str):
     if path.suffix.lower().lstrip(".") != ext:
         # 텍스트가 거의 없는 문서는 업로드 시 PDF로 변환돼 storage_key가 바뀌지만,
         # 원본은 같은 폴더에 "{id}.{원래 확장자}"로 남아 있다(services/files.delete_files 참고).
-        original = path.with_name(f"{row['id']}.{ext}")
+        from pathlib import PurePosixPath
+
+        original_key = str(PurePosixPath(row["storage_key"]).with_name(f"{row['id']}.{ext}"))
+        original = storage.path(original_key)
         if not original.exists():
             raise editor.EditError(f"{name}의 원본 파일을 찾을 수 없어 수정할 수 없습니다(스캔본으로 PDF 변환됨)")
         path = original

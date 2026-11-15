@@ -27,6 +27,7 @@ import AttachmentViewerModal, { ViewerAttachment } from "@/components/Attachment
 import ModelPicker from "@/components/ModelPicker";
 import UsageRing from "@/components/UsageRing";
 
+import { DEFAULT_MODE } from "@/lib/config";
 const PROJECT_COLOR_OPTIONS: { value: ProjectColor; swatchClassName: string; label: string }[] = [
   { value: "default", swatchClassName: "bg-gray-400 dark:bg-gray-300", label: "기본" },
   { value: "red", swatchClassName: "bg-red-500", label: "빨강" },
@@ -147,7 +148,7 @@ export default function ProjectPage() {
   const [quickInput, setQuickInput] = useState("");
   const [starting, setStarting] = useState(false);
   // 새 채팅에 쓸 모델 - "/" 새 채팅 화면과 같은 기본값(Auto, 수동 선택 시 medium).
-  const [mode, setMode] = useState<Mode>("auto");
+  const [mode, setMode] = useState<Mode>(DEFAULT_MODE);
   const [size, setSize] = useState<Size>("medium");
   const refFileInputRef = useRef<HTMLInputElement>(null);
   const refFileDragDepthRef = useRef(0);

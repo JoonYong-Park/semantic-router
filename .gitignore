@@ -8,3 +8,4 @@ node_modules/
 .venv-notebooks/
 uploads/
 backend/zappa_settings.json
+backend/zappa_settings.py
