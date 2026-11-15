@@ -6,4 +6,6 @@ node_modules/
 .DS_Store
 .venv
 .venv-notebooks/
-uploads/backend-flask/zappa_settings.json
+uploads/
+backend-flask/zappa_settings.json
+uploads-flask/
