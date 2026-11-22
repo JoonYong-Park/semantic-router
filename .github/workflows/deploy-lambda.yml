@@ -1,0 +1,89 @@
+# main에 push하면 백엔드(Zappa) → 프론트 순서로 AWS Lambda에 배포한다.
+#
+# 자격 증명
+# - AWS: 액세스 키를 저장하지 않는다. GitHub OIDC 토큰으로 joomini-github-deploy 역할을 맡아
+#   1시간짜리 임시 자격 증명을 받는다. 그 역할은 이 저장소의 main 브랜치에서만 맡을 수 있다
+#   (신뢰 정책의 sub = repo:JoonYong-Park@136958650/semantic-router@1346912812:ref:refs/heads/main,
+#   소유자·저장소 ID가 들어가 같은 이름으로 다시 만든 저장소는 맡을 수 없다).
+# - 모델 API 키, Cognito client secret: GitHub Secrets → 배포 단계의 환경 변수 → Lambda 환경 변수.
+#   로그에는 마스킹되고, 이미지와 git에는 들어가지 않는다.
+#
+# 저장소 설정 (Settings → Secrets and variables → Actions)
+# - Variables: AWS_DEPLOY_ROLE_ARN, FRONTEND_ORIGIN
+#              (로그인 배포 후) COGNITO_REDIRECT_URI, COGNITO_LOGOUT_URI
+# - Secrets:   OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_WORKSPACE_ID,
+#              TAVILY_API_KEY, PERPLEXITY_API_KEY, BRAVE_API_KEY, HF_TOKEN, COGNITO_CLIENT_SECRET
+name: Deploy to AWS Lambda
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 배포가 겹치면 Zappa/CloudFormation 갱신이 꼬인다. 앞 배포가 끝날 때까지 기다린다.
+concurrency:
+  group: deploy-lambda
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # OIDC 토큰 발급
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  AWS_PROFILE_NAME: ""   # 배포 스크립트가 프로필 대신 OIDC 임시 자격 증명을 쓰게 한다
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # 백엔드 이미지(LibreOffice, torch)가 커서 기본 러너 디스크가 모자랄 수 있다.
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          role-session-name: joomini-deploy-${{ github.run_id }}
+
+      - name: Deploy backend (Zappa update)
+        env:
+          FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
+          COGNITO_REDIRECT_URI: ${{ vars.COGNITO_REDIRECT_URI }}
+          COGNITO_LOGOUT_URI: ${{ vars.COGNITO_LOGOUT_URI }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          COGNITO_CLIENT_SECRET: ${{ secrets.COGNITO_CLIENT_SECRET }}
+        run: bash backend/scripts/deploy_lambda.sh update
+
+      - name: Find API URL
+        id: api
+        run: |
+          API_ID="$(aws apigateway get-rest-apis --query "items[?name=='joomini-dev'].id" --output text)"
+          echo "url=https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com/dev" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy frontend
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+        run: bash scripts/deploy_frontend_lambda.sh
+
+      - name: Health check
+        run: |
+          for i in 1 2 3 4 5; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "${{ steps.api.outputs.url }}/health" || true)"
+            echo "health: $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 10
+          done
+          exit 1

@@ -33,7 +33,7 @@ In dev the backend code is bind-mounted and served by the Flask dev server, so e
 
 There is no linter config. Verification is the smoke test, a container build, then hitting endpoints with `curl` (and looking at items in the DynamoDB admin GUI at http://localhost:8002).
 
-Deploys run on every push to `main`: a GitHub Actions self-hosted runner executes `scripts/deploy.sh`, which builds, health-checks, and rolls back to the `:previous` image on failure. Details are in docs/en/DEPLOYMENT.md (Korean: docs/ko/DEPLOYMENT.md). How to swap one of the 9 models: docs/en/MODEL_UPDATE.md (Korean: docs/ko/MODEL_UPDATE.md). The AWS move (Lambda + Zappa) is tracked in docs/ko/AWS_MIGRATION_LOG.md.
+Deploys run on every push to `main`: `.github/workflows/deploy-lambda.yml` assumes the `joomini-github-deploy` IAM role through GitHub OIDC (no stored AWS keys; the role trusts only this repo's `main`), runs `backend/scripts/deploy_lambda.sh update` (Zappa) and then `scripts/deploy_frontend_lambda.sh`, and checks `/health`. Model API keys and `COGNITO_CLIENT_SECRET` come from GitHub Secrets and end up only in Lambda environment variables; `AWS_DEPLOY_ROLE_ARN`, `FRONTEND_ORIGIN`, `COGNITO_REDIRECT_URI`, `COGNITO_LOGOUT_URI` are repository variables. The scripts still run locally with the `joomini` AWS profile. (The old self-hosted `scripts/deploy.sh` flow is no longer triggered; docs/en/DEPLOYMENT.md describes it.) How to swap one of the 9 models: docs/en/MODEL_UPDATE.md (Korean: docs/ko/MODEL_UPDATE.md). The AWS move (Lambda + Zappa) is tracked in docs/ko/AWS_MIGRATION_LOG.md.
 
 ## Data: one DynamoDB table, no migrations
 

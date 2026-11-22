@@ -8,7 +8,7 @@
 set -euo pipefail
 
 : "${API_URL:?API_URL(백엔드 API Gateway 주소)이 필요합니다}"
-PROFILE="${AWS_PROFILE_NAME:-joomini}"
+PROFILE="${AWS_PROFILE_NAME-joomini}"   # GitHub Actions에서는 빈 값 → OIDC 임시 자격 증명
 REGION="ap-northeast-2"
 REPO="joomini-frontend"
 FUNC="joomini-frontend"
@@ -16,7 +16,7 @@ ROLE="joomini-frontend-lambda-role"
 DEFAULT_MODE="${DEFAULT_MODE:-openai}"   # auto 라우팅을 끈 동안은 수동 모드가 기본
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-aws_() { aws --profile "$PROFILE" --region "$REGION" "$@"; }
+aws_() { if [ -n "$PROFILE" ]; then aws --profile "$PROFILE" --region "$REGION" "$@"; else aws --region "$REGION" "$@"; fi; }
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$1"; }
 
 ACCOUNT="$(aws_ sts get-caller-identity --query Account --output text)"
