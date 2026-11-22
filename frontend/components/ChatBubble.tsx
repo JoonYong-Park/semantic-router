@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { attachmentFileUrl } from "@/lib/api";
+import { attachmentFileUrl, downloadAuthed } from "@/lib/api";
+import { useAuthedObjectUrl } from "@/lib/useAuthedObjectUrl";
 import { AttachmentOut, ChatMessage } from "@/lib/types";
 import { formatHoverTime } from "@/lib/dateFormat";
 import { AttachmentChip, AttachmentTypeIcon } from "./AttachmentChip";
@@ -91,18 +92,21 @@ function GeneratedFileCard({
 }) {
   const ext = attachment.original_name.split(".").pop()?.toUpperCase() ?? "";
   const isImage = attachment.mime_type.startsWith("image/");
+  // 파일 API는 로그인 토큰이 필요해 blob URL로 받아 미리보기에 쓴다.
+  const { src: imageSrc } = useAuthedObjectUrl(
+    isImage && conversationId ? attachmentFileUrl("chat", conversationId, attachment.id) : null
+  );
   return (
     <div className="flex w-full max-w-sm flex-col gap-2">
       {isImage && conversationId && (
         // 생성 이미지는 카드 위에 바로 미리보기 - 클릭하면 기존 뷰어로 크게 본다.
         <button type="button" onClick={onOpen} disabled={!onOpen} className="block overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={attachmentFileUrl("chat", conversationId, attachment.id)}
-            alt={attachment.original_name}
-            className="max-h-80 w-full object-contain"
-            loading="lazy"
-          />
+          {imageSrc ? (
+            <img src={imageSrc} alt={attachment.original_name} className="max-h-80 w-full object-contain" />
+          ) : (
+            <div className="h-40 w-full animate-pulse bg-gray-100 dark:bg-gray-800" />
+          )}
         </button>
       )}
     <div className="flex w-full items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-2.5 dark:border-gray-700 dark:bg-gray-900">
@@ -125,15 +129,19 @@ function GeneratedFileCard({
         </span>
       </button>
       {conversationId && (
-        <a
-          href={attachmentFileUrl("chat", conversationId, attachment.id, true)}
-          download={attachment.original_name}
+        <button
+          type="button"
+          onClick={() =>
+            downloadAuthed(attachmentFileUrl("chat", conversationId, attachment.id, true), attachment.original_name).catch(
+              (err) => alert(err instanceof Error ? err.message : "다운로드하지 못했습니다.")
+            )
+          }
           aria-label={`${attachment.original_name} 다운로드`}
           title="다운로드"
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
         >
           <DownloadIcon />
-        </a>
+        </button>
       )}
     </div>
     </div>

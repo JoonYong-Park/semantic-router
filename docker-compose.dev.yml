@@ -37,7 +37,8 @@ services:
     # (terminate called without an active exception) 자동으로 다시 띄운다.
     restart: unless-stopped
     env_file:
-      - .env   # 모델 API 키
+      - .env           # 모델 API 키
+      - backend/.env   # COGNITO_CLIENT_SECRET (git 제외)
     environment:
       DYNAMODB_ENDPOINT: http://dynamodb:8000
       DYNAMODB_TABLE: joomini
@@ -46,6 +47,15 @@ services:
       AWS_ACCESS_KEY_ID: local
       AWS_SECRET_ACCESS_KEY: local
       FRONTEND_ORIGIN: http://localhost:3000
+      # 로그인 (Cognito + Google). 비밀이 아닌 값만 여기에 둔다. secret은 backend/.env.
+      COGNITO_REGION: ap-northeast-2
+      COGNITO_USER_POOL_ID: ap-northeast-2_eQhPcU4Lt
+      COGNITO_CLIENT_ID: 3e0c78p3tdkuenvn455j1rd8b1
+      COGNITO_DOMAIN: https://ap-northeast-2eqhpcu4lt.auth.ap-northeast-2.amazoncognito.com
+      COGNITO_REDIRECT_URI: http://localhost:8000/auth/callback
+      COOKIE_SECURE: "0"   # 로컬은 http라서. 배포(https)에서는 1
+      # 로그인 없이 데모 사용자로 돌리려면 1 (로컬 전용, 배포 금지)
+      AUTH_DISABLED: "0"
       FLASK_APP: app:create_app
       FLASK_DEBUG: "1"
       # 개발 서버 리로더가 torch 같은 설치 패키지 수만 개 파일까지 감시하지 않게 한다.

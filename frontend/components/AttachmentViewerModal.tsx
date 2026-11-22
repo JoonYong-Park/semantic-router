@@ -5,11 +5,13 @@ import {
   AttachmentKind,
   AttachmentTable,
   attachmentFileUrl,
+  downloadAuthed,
   fetchAttachmentPreviewPdf,
   getAttachmentTable,
   getAttachmentText,
 } from "@/lib/api";
 import MarkdownContent from "./MarkdownContent";
+import { useAuthedObjectUrl } from "@/lib/useAuthedObjectUrl";
 
 export interface ViewerAttachment {
   id: string;
@@ -78,6 +80,13 @@ function Spinner() {
   );
 }
 
+// 파일 API는 로그인 토큰이 필요해 <a href>로 바로 받지 않고 blob으로 받아 저장한다.
+function downloadAttachment(kind: AttachmentKind, parentId: string, attachment: ViewerAttachment) {
+  downloadAuthed(attachmentFileUrl(kind, parentId, attachment.id, true), attachment.original_name).catch((err) =>
+    alert(err instanceof Error ? err.message : "다운로드하지 못했습니다.")
+  );
+}
+
 function ErrorMessage({
   message,
   kind,
@@ -92,13 +101,14 @@ function ErrorMessage({
   return (
     <div className="flex flex-col items-center gap-3 text-center text-sm text-gray-500 dark:text-gray-400">
       <p>{message}</p>
-      <a
-        href={attachmentFileUrl(kind, parentId, attachment.id, true)}
+      <button
+        type="button"
+        onClick={() => downloadAttachment(kind, parentId, attachment)}
         className="flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800"
       >
         <DownloadIcon />
         다운로드
-      </a>
+      </button>
     </div>
   );
 }
@@ -188,6 +198,10 @@ function ViewerBody({
   const [text, setText] = useState<{ text: string; truncated: boolean } | null>(null);
   const [table, setTable] = useState<AttachmentTable | null>(null);
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  // 이미지/PDF 원본은 토큰을 붙여 받아 blob URL로 <img>/<iframe>에 넣는다.
+  const { src: fileSrc } = useAuthedObjectUrl(
+    viewKind === "image" || viewKind === "pdf" ? attachmentFileUrl(kind, parentId, attachment.id) : null
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -233,7 +247,7 @@ function ViewerBody({
       <div className="flex h-full items-center justify-center overflow-auto">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={attachmentFileUrl(kind, parentId, attachment.id)}
+          src={fileSrc ?? undefined}
           alt={attachment.original_name}
           className="max-h-full max-w-full object-contain"
         />
@@ -244,7 +258,7 @@ function ViewerBody({
   if (viewKind === "pdf") {
     return (
       <iframe
-        src={attachmentFileUrl(kind, parentId, attachment.id)}
+        src={fileSrc ?? undefined}
         title={attachment.original_name}
         className="h-full w-full rounded-lg border border-gray-200 dark:border-gray-700"
       />
@@ -383,13 +397,14 @@ export default function AttachmentViewerModal({
             <p className="text-xs text-gray-400 dark:text-gray-500">{formatBytes(attachment.size_bytes)}</p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <a
-              href={attachmentFileUrl(kind, parentId, attachment.id, true)}
+            <button
+              type="button"
+              onClick={() => downloadAttachment(kind, parentId, attachment)}
               aria-label="다운로드"
               className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
             >
               <DownloadIcon />
-            </a>
+            </button>
             <button
               type="button"
               onClick={onClose}
