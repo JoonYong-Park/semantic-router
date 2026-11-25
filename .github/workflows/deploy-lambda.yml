@@ -9,7 +9,7 @@
 #   로그에는 마스킹되고, 이미지와 git에는 들어가지 않는다.
 #
 # 저장소 설정 (Settings → Secrets and variables → Actions)
-# - Variables: AWS_DEPLOY_ROLE_ARN, FRONTEND_ORIGIN
+# - Variables: AWS_DEPLOY_ROLE_ARN, FRONTEND_ORIGIN (CloudFront 주소, infra/cloudfront.yaml)
 #              (로그인 배포 후) COGNITO_REDIRECT_URI, COGNITO_LOGOUT_URI
 # - Secrets:   OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_WORKSPACE_ID,
 #              TAVILY_API_KEY, PERPLEXITY_API_KEY, BRAVE_API_KEY, HF_TOKEN, COGNITO_CLIENT_SECRET
@@ -67,23 +67,20 @@ jobs:
           COGNITO_CLIENT_SECRET: ${{ secrets.COGNITO_CLIENT_SECRET }}
         run: bash backend/scripts/deploy_lambda.sh update
 
-      - name: Find API URL
-        id: api
-        run: |
-          API_ID="$(aws apigateway get-rest-apis --query "items[?name=='joomini-dev'].id" --output text)"
-          echo "url=https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com/dev" >> "$GITHUB_OUTPUT"
-
+      # 프론트는 API를 같은 도메인의 /api(상대 경로)로 부른다. CloudFront가 /api/*를 API Gateway로 넘긴다.
       - name: Deploy frontend
-        env:
-          API_URL: ${{ steps.api.outputs.url }}
         run: bash scripts/deploy_frontend_lambda.sh
 
-      - name: Health check
+      # 사용자가 들어오는 길(CloudFront) 그대로 확인한다. FRONTEND_ORIGIN = CloudFront 주소.
+      - name: Health check (via CloudFront)
+        env:
+          SITE: ${{ vars.FRONTEND_ORIGIN }}
         run: |
           for i in 1 2 3 4 5; do
-            code="$(curl -s -o /dev/null -w '%{http_code}' "${{ steps.api.outputs.url }}/health" || true)"
-            echo "health: $code"
-            [ "$code" = "200" ] && exit 0
+            api="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/api/health" || true)"
+            web="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/" || true)"
+            echo "api: $api, web: $web"
+            [ "$api" = "200" ] && [ "$web" = "200" ] && exit 0
             sleep 10
           done
           exit 1

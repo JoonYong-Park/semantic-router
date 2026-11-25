@@ -77,7 +77,7 @@ def main() -> None:
             "ephemeral_storage": {"Size": 2048},
             "keep_warm": True,
             "binary_support": True,
-            "cors": False,  # CORS는 Flask(app/__init__.py)가 FRONTEND_ORIGIN으로 처리
+            "cors": False,  # CloudFront 한 도메인이라 CORS가 필요 없다. 로컬은 Flask(app/__init__.py)가 처리
             "environment_variables": {
                 "DYNAMODB_TABLE": TABLE,
                 "STORAGE_BUCKET": files_bucket,
@@ -86,6 +86,8 @@ def main() -> None:
                 "ROUTER_MODELS": "off",
                 **cognito,
                 "COOKIE_SECURE": "1",
+                # CloudFront가 /api/* 를 이 앱으로 넘긴다(infra/cloudfront.yaml). 쿠키 Path를 맞춘다.
+                "API_PATH_PREFIX": "/api",
             },
             "aws_environment_variables": secrets,
             "extra_permissions": [

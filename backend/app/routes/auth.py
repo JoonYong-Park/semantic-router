@@ -8,6 +8,9 @@
 
 토큰을 URL이나 localStorage에 두지 않는다. access 토큰은 응답 본문으로만, refresh 토큰은
 HttpOnly·SameSite=Strict·Path=/auth 쿠키로만 오간다.
+
+배포에서는 CloudFront가 /api/* 를 이 앱으로 넘기므로(앞의 /api는 떼고) 브라우저가 보는 경로는
+/api/auth/... 다. 쿠키 Path는 브라우저 기준이라 API_PATH_PREFIX(배포: /api, 로컬: 빈 값)를 붙인다.
 """
 
 import base64
@@ -34,6 +37,9 @@ REDIRECT_URI = os.environ.get("COGNITO_REDIRECT_URI", "http://localhost:8000/aut
 LOGOUT_URI = os.environ.get("COGNITO_LOGOUT_URI", FRONTEND_ORIGIN + "/")
 # 로컬 http에서도 쓰려면 0. 배포(https)에서는 반드시 1(기본값).
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1") == "1"
+API_PATH_PREFIX = os.environ.get("API_PATH_PREFIX", "").rstrip("/")
+REFRESH_COOKIE_PATH = f"{API_PATH_PREFIX}/auth"
+OAUTH_COOKIE_PATH = f"{API_PATH_PREFIX}/auth/callback"
 
 OAUTH_COOKIE = "joomini_oauth"     # state + PKCE verifier (10분, 콜백 경로에서만)
 REFRESH_COOKIE = "joomini_rt"      # refresh 토큰 (7일, /auth 경로에서만)
@@ -65,12 +71,12 @@ def _token_request(data: dict) -> dict:
 
 
 def _set_refresh_cookie(resp, token: str) -> None:
-    resp.set_cookie(REFRESH_COOKIE, token, max_age=REFRESH_MAX_AGE, path="/auth",
+    resp.set_cookie(REFRESH_COOKIE, token, max_age=REFRESH_MAX_AGE, path=REFRESH_COOKIE_PATH,
                     httponly=True, secure=COOKIE_SECURE, samesite="Strict")
 
 
 def _clear_refresh_cookie(resp) -> None:
-    resp.delete_cookie(REFRESH_COOKIE, path="/auth", httponly=True, secure=COOKIE_SECURE, samesite="Strict")
+    resp.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH, httponly=True, secure=COOKIE_SECURE, samesite="Strict")
 
 
 def _check_csrf() -> None:
@@ -110,7 +116,7 @@ def login():
     })
     resp = redirect(f"{COGNITO_DOMAIN}/oauth2/authorize?{query}")
     # Lax: Google/Cognito에서 돌아오는 최상위 GET 이동에는 쿠키가 실려야 한다.
-    resp.set_cookie(OAUTH_COOKIE, f"{state}.{verifier}", max_age=600, path="/auth/callback",
+    resp.set_cookie(OAUTH_COOKIE, f"{state}.{verifier}", max_age=600, path=OAUTH_COOKIE_PATH,
                     httponly=True, secure=COOKIE_SECURE, samesite="Lax")
     return resp
 
@@ -118,7 +124,7 @@ def login():
 @bp.get("/callback")
 def callback():
     fail = redirect(f"{FRONTEND_ORIGIN}/?login_error=1")
-    fail.delete_cookie(OAUTH_COOKIE, path="/auth/callback")
+    fail.delete_cookie(OAUTH_COOKIE, path=OAUTH_COOKIE_PATH)
 
     saved_state, _, verifier = (request.cookies.get(OAUTH_COOKIE) or "").partition(".")
     state, code = request.args.get("state", ""), request.args.get("code", "")
@@ -142,7 +148,7 @@ def callback():
         return fail
 
     resp = redirect(f"{FRONTEND_ORIGIN}/")
-    resp.delete_cookie(OAUTH_COOKIE, path="/auth/callback")
+    resp.delete_cookie(OAUTH_COOKIE, path=OAUTH_COOKIE_PATH)
     _set_refresh_cookie(resp, tokens["refresh_token"])
     return resp
 
