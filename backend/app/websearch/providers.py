@@ -18,11 +18,10 @@ BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 # 있어도 다음으로 빨리 넘어가도록 짧게 둔다(최악의 경우 3곳 × 15초).
 SEARCH_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
-# site_hint별로 검색을 좁힐 신뢰 도메인. 날씨는 일반 키워드 검색에서 태풍/정치
-# 뉴스나 확률 계산기 스팸 사이트가 섞여 들어오는 걸 실제로 확인해서 추가함.
-SITE_HINT_DOMAINS: dict[str, list[str]] = {
-    "weather": ["weather.go.kr", "weather.naver.com"],
-}
+# site_hint별로 검색을 좁힐 신뢰 도메인. 예전에는 날씨를 기상청·네이버 날씨로 좁혔는데,
+# 네이버 날씨는 검색 결과에 나오지 않고 기상청 페이지는 인코딩이 깨지고 오래된 저장본이라
+# 날씨 질문에 "정보가 깨져 있다"는 답이 나왔다. 날씨는 이제 get_weather 툴(Open-Meteo)이 맡는다.
+SITE_HINT_DOMAINS: dict[str, list[str]] = {}
 
 
 async def tavily_search(

@@ -97,7 +97,7 @@ app/
 ├── websearch/      providers.py (Tavily → Perplexity → Brave, search_web)
 ├── documents/      generator.py (create) · editor.py (inspect/edit) · extractor.py (text/image extraction)
 └── tools/          base.py (ToolSpec/Context/Result, schema helpers) · registry.py (get_tool_specs, run_tool)
-                    web_search.py · documents.py · image.py · edit.py
+                    web_search.py · weather.py · documents.py · image.py · edit.py
 ```
 
 Dependency direction: `routes` → `chat` / `services` / `db.repo`; `chat` → `tools` → `documents` / `websearch` / `llm`; `chat` → `routing`, `llm`, `memory`. `llm` must not import `tools` or `chat` (specs are passed in). `tools/*` import `services` and `documents` lazily inside executors to avoid import cycles; keep it that way.
@@ -162,7 +162,7 @@ System-prompt context is injected in a fixed precedence order: personal instruct
 - `events`, SSE events sent after the tool finishes;
 - `metadata`, values for the loop that the model never sees.
 
-Registered tools: `web_search` (always sent; Tavily → Perplexity → Brave fallback, see below), three document tools, `generate_image`, and `inspect_document` / `edit_document`. Search failure and zero results are both reported to the model. `get_tool_specs(include_doc_tools, include_image_tools, include_edit_tools)` decides what is sent each turn; each group has its own intent detector in `routing/intent.py`. `ToolContext.turn_state` is shared by all calls in one turn (generated-file count, image count). `run_tool` logs every `is_error` result (`툴 에러 결과`, first 200 chars), and the loop logs tool names per round (`툴 호출`), so model paraphrases of errors can be traced.
+Registered tools: `web_search` (always sent; Tavily → Perplexity → Brave fallback, see below), `get_weather` (always sent; Open-Meteo, no API key; the model passes the place name plus approximate latitude/longitude because Open-Meteo geocoding misses Korean names; emits `processing` "날씨 확인 중"), three document tools, `generate_image`, and `inspect_document` / `edit_document`. Search failure and zero results are both reported to the model. `get_tool_specs(include_doc_tools, include_image_tools, include_edit_tools)` decides what is sent each turn; each group has its own intent detector in `routing/intent.py`. `ToolContext.turn_state` is shared by all calls in one turn (generated-file count, image count). `run_tool` logs every `is_error` result (`툴 에러 결과`, first 200 chars), and the loop logs tool names per round (`툴 호출`), so model paraphrases of errors can be traced.
 
 To add a tool:
 1. Write an async executor that returns a `ToolResult`. Use `ctx.emit` for progress; don't raise for expected failures, return `is_error=True` instead.
@@ -175,7 +175,8 @@ To add a tool:
 - **Zero results is not an error.** It does not trigger a fallback and is reported to the model as 0 results.
 - **Timeout:** each provider gets its own short timeout, `SEARCH_TIMEOUT` (15s, connect 5s), so a hung provider costs at most that long.
 - **Result shape:** every provider is normalized to `{title, url, content}`, so the tool's output format and source citations are unchanged. Brave's HTML tags are stripped and `extra_snippets` are appended to `content`.
-- **Filters:** `time_range` maps to Tavily `time_range`, Perplexity `search_recency_filter`, and Brave `freshness` (`pd/pw/pm/py`). `site_hint` maps to Tavily `include_domains`, Perplexity `search_domain_filter`, and a `site:` operator in the Brave query.
+- **Filters:** `time_range` maps to Tavily `time_range`, Perplexity `search_recency_filter`, and Brave `freshness` (`pd/pw/pm/py`). The tool no longer exposes `site_hint`: the old weather filter (기상청, 네이버 날씨) returned one garbled, weeks-old KMA page, so weather moved to `get_weather`. Results pass up to 1,500 chars each, and the tool result carries today's KST date and tells the model to flag stale or garbled results.
+- **Date:** every turn's system message ends with `[현재 시각] YYYY-MM-DD HH:MM KST (요일)` (`chat/turn.py`).
 - **Failure:** if every provider fails, `SearchUnavailableError` lists each provider's reason (HTTP status or "키 없음", never keys or response bodies). The tool then returns it to the model as an `is_error` result.
 - **Logs:** a fallback logs `웹 검색 실패, 다음 제공자로 폴백` and `웹 검색 폴백 성공 (provider=...)`; normal searches log `웹 검색 (provider=...)`.
 - **Keys:** `TAVILY_API_KEY`, `PERPLEXITY_API_KEY`, `BRAVE_API_KEY` in `.env` (see `.env.example`). The server's `.env` needs them too, and the backend container must be recreated to pick them up.
