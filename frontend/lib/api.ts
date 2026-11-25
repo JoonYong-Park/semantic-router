@@ -21,7 +21,75 @@ import {
   UserUpdateBody,
 } from "./types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_URL, apiFetch, getAccessToken, refreshAccessToken } from "./auth";
+
+/**
+ * 업로드 진행률(onProgress)이 필요해 XHR을 쓴다(fetch는 업로드 진행률 이벤트가 없다).
+ * apiFetch와 같이 Bearer 헤더를 붙이고, 401이면 토큰을 재발급해 한 번 다시 올린다.
+ */
+function xhrUpload<T>(url: string, file: File, onProgress?: (percent: number) => void): Promise<T> {
+  const attempt = (token: string | null) =>
+    new Promise<{ status: number; text: string }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText });
+      xhr.onerror = () => reject(new Error("서버에 연결할 수 없습니다."));
+      const formData = new FormData();
+      formData.append("file", file);
+      xhr.send(formData);
+    });
+
+  return (async () => {
+    let res = await attempt(await getAccessToken());
+    if (res.status === 401) {
+      const fresh = await refreshAccessToken();
+      if (fresh) res = await attempt(fresh);
+    }
+    if (res.status >= 200 && res.status < 300) {
+      try {
+        return JSON.parse(res.text) as T;
+      } catch {
+        throw new Error("서버 응답을 해석하지 못했습니다.");
+      }
+    }
+    let detail = `업로드 실패 (HTTP ${res.status})`;
+    try {
+      const payload = JSON.parse(res.text);
+      if (typeof payload?.detail === "string") detail = payload.detail;
+    } catch {
+      // 응답이 JSON이 아니면 기본 메시지 유지
+    }
+    throw new Error(detail);
+  })();
+}
+
+/**
+ * 인증이 필요한 파일을 받아 blob URL로 돌려준다. <img>/<iframe>/<a href>는 Authorization
+ * 헤더를 못 붙여서 파일 URL을 바로 넣지 않고 이걸 거친다. 다 쓰면 URL.revokeObjectURL.
+ */
+export async function fetchBlobUrl(url: string): Promise<string> {
+  const res = await apiFetch(url);
+  if (!res.ok) throw new Error(`파일을 불러오지 못했습니다 (HTTP ${res.status})`);
+  return URL.createObjectURL(await res.blob());
+}
+
+/** 인증이 필요한 파일 다운로드. 파일명은 호출하는 쪽이 아는 원본 이름을 쓴다. */
+export async function downloadAuthed(url: string, filename: string): Promise<void> {
+  const blobUrl = await fetchBlobUrl(url);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+}
 
 export class ChatApiError extends Error {
   selectedModel?: string | null;
@@ -43,7 +111,7 @@ export class ChatApiError extends Error {
 }
 
 export async function sendChat(body: ChatRequestBody): Promise<ChatResponseBody> {
-  const res = await fetch(`${API_URL}/chat`, {
+  const res = await apiFetch(`${API_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -71,26 +139,26 @@ export async function sendChat(body: ChatRequestBody): Promise<ChatResponseBody>
 // --- 채팅방(대화방) ---
 
 export async function listConversations(): Promise<Conversation[]> {
-  const res = await fetch(`${API_URL}/conversations`);
+  const res = await apiFetch(`${API_URL}/conversations`);
   if (!res.ok) throw new Error(`채팅방 목록을 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 
 export async function createConversation(): Promise<Conversation> {
-  const res = await fetch(`${API_URL}/conversations`, { method: "POST" });
+  const res = await apiFetch(`${API_URL}/conversations`, { method: "POST" });
   if (!res.ok) throw new Error(`채팅방을 만들지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/conversations/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_URL}/conversations/${id}`, { method: "DELETE" });
   if (!res.ok && res.status !== 404) {
     throw new Error(`채팅방을 삭제하지 못했습니다 (HTTP ${res.status})`);
   }
 }
 
 export async function getConversationMessages(id: string): Promise<DBMessage[]> {
-  const res = await fetch(`${API_URL}/conversations/${id}/messages`);
+  const res = await apiFetch(`${API_URL}/conversations/${id}/messages`);
   if (!res.ok) throw new Error(`메시지를 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
@@ -99,7 +167,7 @@ export async function updateConversation(
   id: string,
   body: { title?: string; pinned?: boolean; sort_order?: number }
 ): Promise<Conversation> {
-  const res = await fetch(`${API_URL}/conversations/${id}`, {
+  const res = await apiFetch(`${API_URL}/conversations/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -112,7 +180,7 @@ export async function updateConversationProject(
   id: string,
   projectId: string | null
 ): Promise<Conversation> {
-  const res = await fetch(`${API_URL}/conversations/${id}/project`, {
+  const res = await apiFetch(`${API_URL}/conversations/${id}/project`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId }),
@@ -124,13 +192,13 @@ export async function updateConversationProject(
 // --- 개인 지침(설정) ---
 
 export async function getSettings(): Promise<Settings> {
-  const res = await fetch(`${API_URL}/settings`);
+  const res = await apiFetch(`${API_URL}/settings`);
   if (!res.ok) throw new Error(`설정을 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 
 export async function updateSettings(body: SettingsUpdateBody): Promise<Settings> {
-  const res = await fetch(`${API_URL}/settings`, {
+  const res = await apiFetch(`${API_URL}/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -140,13 +208,13 @@ export async function updateSettings(body: SettingsUpdateBody): Promise<Settings
 }
 
 export async function deleteInstruction(): Promise<Settings> {
-  const res = await fetch(`${API_URL}/settings/instruction`, { method: "DELETE" });
+  const res = await apiFetch(`${API_URL}/settings/instruction`, { method: "DELETE" });
   if (!res.ok) throw new Error(`개인 지침을 삭제하지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 
 export async function importMemory(text: string): Promise<Settings> {
-  const res = await fetch(`${API_URL}/settings/import`, {
+  const res = await apiFetch(`${API_URL}/settings/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
@@ -156,7 +224,7 @@ export async function importMemory(text: string): Promise<Settings> {
 }
 
 export async function deleteImportedMemory(): Promise<{ imported_memory: string | null }> {
-  const res = await fetch(`${API_URL}/settings/import`, { method: "DELETE" });
+  const res = await apiFetch(`${API_URL}/settings/import`, { method: "DELETE" });
   if (!res.ok) throw new Error(`가져온 정보를 삭제하지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
@@ -164,7 +232,7 @@ export async function deleteImportedMemory(): Promise<{ imported_memory: string 
 // --- 사용자 ---
 
 export async function updateCurrentUser(body: UserUpdateBody): Promise<User> {
-  const res = await fetch(`${API_URL}/users/me`, {
+  const res = await apiFetch(`${API_URL}/users/me`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -182,7 +250,7 @@ export function getAvatarUrl(user: User | null): string | null {
 export async function uploadAvatar(file: File): Promise<User> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${API_URL}/users/me/avatar`, { method: "PUT", body: form });
+  const res = await apiFetch(`${API_URL}/users/me/avatar`, { method: "PUT", body: form });
   if (!res.ok) {
     let detail = "";
     try {
@@ -194,13 +262,13 @@ export async function uploadAvatar(file: File): Promise<User> {
 }
 
 export async function deleteAvatar(): Promise<User> {
-  const res = await fetch(`${API_URL}/users/me/avatar`, { method: "DELETE" });
+  const res = await apiFetch(`${API_URL}/users/me/avatar`, { method: "DELETE" });
   if (!res.ok) throw new Error(`사진을 삭제하지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 
 export async function getCurrentUser(): Promise<User> {
-  const res = await fetch(`${API_URL}/users/me`);
+  const res = await apiFetch(`${API_URL}/users/me`);
   if (!res.ok) throw new Error(`사용자 정보를 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
@@ -208,7 +276,7 @@ export async function getCurrentUser(): Promise<User> {
 // --- 자동 메모리 추출 ---
 
 export async function extractMemoryAll(): Promise<{ status: string; count: number }> {
-  const res = await fetch(`${API_URL}/memory/extract-all`, { method: "POST" });
+  const res = await apiFetch(`${API_URL}/memory/extract-all`, { method: "POST" });
   if (!res.ok) throw new Error(`메모리 업데이트에 실패했습니다 (HTTP ${res.status})`);
   return res.json();
 }
@@ -216,13 +284,13 @@ export async function extractMemoryAll(): Promise<{ status: string; count: numbe
 // --- 메모리 조회(전역 + 프로젝트별) ---
 
 export async function getMemoryOverview(): Promise<MemoryOverview> {
-  const res = await fetch(`${API_URL}/settings/memory`);
+  const res = await apiFetch(`${API_URL}/settings/memory`);
   if (!res.ok) throw new Error(`메모리를 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 
 export async function deleteMemoryFact(memoryId: string): Promise<void> {
-  const res = await fetch(`${API_URL}/settings/memory/${memoryId}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_URL}/settings/memory/${memoryId}`, { method: "DELETE" });
   if (!res.ok && res.status !== 404) {
     throw new Error(`메모리를 삭제하지 못했습니다 (HTTP ${res.status})`);
   }
@@ -232,7 +300,7 @@ export async function updateMemoryTopic(
   memoryId: string,
   payload: MemoryTopicUpdate
 ): Promise<MemoryTopic> {
-  const res = await fetch(`${API_URL}/settings/memory/${memoryId}`, {
+  const res = await apiFetch(`${API_URL}/settings/memory/${memoryId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -244,13 +312,13 @@ export async function updateMemoryTopic(
 // --- 프로젝트 폴더 ---
 
 export async function listProjects(): Promise<Project[]> {
-  const res = await fetch(`${API_URL}/projects`);
+  const res = await apiFetch(`${API_URL}/projects`);
   if (!res.ok) throw new Error(`프로젝트 목록을 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 
 export async function createProject(name: string, instruction?: string): Promise<Project> {
-  const res = await fetch(`${API_URL}/projects`, {
+  const res = await apiFetch(`${API_URL}/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, instruction }),
@@ -260,7 +328,7 @@ export async function createProject(name: string, instruction?: string): Promise
 }
 
 export async function getProject(id: string): Promise<Project> {
-  const res = await fetch(`${API_URL}/projects/${id}`);
+  const res = await apiFetch(`${API_URL}/projects/${id}`);
   if (!res.ok) throw new Error(`프로젝트를 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
@@ -275,7 +343,7 @@ export async function updateProject(
     color?: ProjectColor;
   }
 ): Promise<Project> {
-  const res = await fetch(`${API_URL}/projects/${id}`, {
+  const res = await apiFetch(`${API_URL}/projects/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -287,14 +355,14 @@ export async function updateProject(
 // 프로젝트를 지우면 소속 채팅방(+ 그 메시지/첨부)/참고자료/프로젝트 메모리가
 // 전부 같이 지워진다(백엔드 FK CASCADE + delete_chat_upload_dir 정리, 되돌릴 수 없음).
 export async function deleteProject(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/projects/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${API_URL}/projects/${id}`, { method: "DELETE" });
   if (!res.ok && res.status !== 404) {
     throw new Error(`프로젝트를 삭제하지 못했습니다 (HTTP ${res.status})`);
   }
 }
 
 export async function listProjectFiles(projectId: string): Promise<ProjectFilesOut> {
-  const res = await fetch(`${API_URL}/projects/${projectId}/files`);
+  const res = await apiFetch(`${API_URL}/projects/${projectId}/files`);
   if (!res.ok) throw new Error(`참고자료 목록을 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
@@ -307,44 +375,11 @@ export function uploadProjectFile(
   file: File,
   onProgress?: (percent: number) => void
 ): Promise<ProjectFilesOut["files"][number]> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_URL}/projects/${projectId}/files`);
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          resolve(JSON.parse(xhr.responseText));
-        } catch {
-          reject(new Error("서버 응답을 해석하지 못했습니다."));
-        }
-      } else {
-        let detail = `업로드 실패 (HTTP ${xhr.status})`;
-        try {
-          const payload = JSON.parse(xhr.responseText);
-          if (typeof payload?.detail === "string") detail = payload.detail;
-        } catch {
-          // 응답이 JSON이 아니면 기본 메시지 유지
-        }
-        reject(new Error(detail));
-      }
-    };
-    xhr.onerror = () => reject(new Error("서버에 연결할 수 없습니다."));
-
-    const formData = new FormData();
-    formData.append("file", file);
-    xhr.send(formData);
-  });
+  return xhrUpload(`${API_URL}/projects/${projectId}/files`, file, onProgress);
 }
 
 export async function deleteProjectFile(projectId: string, fileId: string): Promise<void> {
-  const res = await fetch(`${API_URL}/projects/${projectId}/files/${fileId}`, {
+  const res = await apiFetch(`${API_URL}/projects/${projectId}/files/${fileId}`, {
     method: "DELETE",
   });
   if (!res.ok && res.status !== 404) {
@@ -355,7 +390,7 @@ export async function deleteProjectFile(projectId: string, fileId: string): Prom
 export async function extractProjectMemoryAll(
   projectId: string
 ): Promise<{ status: string; count: number }> {
-  const res = await fetch(`${API_URL}/projects/${projectId}/memory/extract-all`, {
+  const res = await apiFetch(`${API_URL}/projects/${projectId}/memory/extract-all`, {
     method: "POST",
   });
   if (!res.ok) throw new Error(`메모리 업데이트에 실패했습니다 (HTTP ${res.status})`);
@@ -365,13 +400,13 @@ export async function extractProjectMemoryAll(
 // --- 토큰 사용량 ---
 
 export async function getUsageQuota(): Promise<UsageQuota> {
-  const res = await fetch(`${API_URL}/usage/quota`);
+  const res = await apiFetch(`${API_URL}/usage/quota`);
   if (!res.ok) throw new Error(`토큰 사용량을 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
 
 export async function getUsageStats(period: UsagePeriod): Promise<UsageStats> {
-  const res = await fetch(`${API_URL}/usage/stats?period=${period}`);
+  const res = await apiFetch(`${API_URL}/usage/stats?period=${period}`);
   if (!res.ok) throw new Error(`사용량 통계를 불러오지 못했습니다 (HTTP ${res.status})`);
   return res.json();
 }
@@ -387,47 +422,14 @@ export function uploadAttachment(
   file: File,
   onProgress?: (percent: number) => void
 ): Promise<AttachmentOut> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_URL}/conversations/${conversationId}/attachments`);
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          resolve(JSON.parse(xhr.responseText));
-        } catch {
-          reject(new Error("서버 응답을 해석하지 못했습니다."));
-        }
-      } else {
-        let detail = `업로드 실패 (HTTP ${xhr.status})`;
-        try {
-          const payload = JSON.parse(xhr.responseText);
-          if (typeof payload?.detail === "string") detail = payload.detail;
-        } catch {
-          // 응답이 JSON이 아니면 기본 메시지 유지
-        }
-        reject(new Error(detail));
-      }
-    };
-    xhr.onerror = () => reject(new Error("서버에 연결할 수 없습니다."));
-
-    const formData = new FormData();
-    formData.append("file", file);
-    xhr.send(formData);
-  });
+  return xhrUpload(`${API_URL}/conversations/${conversationId}/attachments`, file, onProgress);
 }
 
 export async function deleteAttachment(
   conversationId: string,
   attachmentId: string
 ): Promise<void> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_URL}/conversations/${conversationId}/attachments/${attachmentId}`,
     { method: "DELETE" }
   );
@@ -478,7 +480,7 @@ export async function fetchAttachmentPreviewPdf(
   parentId: string,
   itemId: string
 ): Promise<string> {
-  const res = await fetch(attachmentPreviewPdfUrl(kind, parentId, itemId));
+  const res = await apiFetch(attachmentPreviewPdfUrl(kind, parentId, itemId));
   if (!res.ok) {
     const payload = await res.json().catch(() => null);
     throw new Error(
@@ -505,7 +507,7 @@ export async function getAttachmentTable(
   parentId: string,
   itemId: string
 ): Promise<AttachmentTable> {
-  const res = await fetch(`${attachmentBaseUrl(kind, parentId, itemId)}/table`);
+  const res = await apiFetch(`${attachmentBaseUrl(kind, parentId, itemId)}/table`);
   if (!res.ok) {
     const payload = await res.json().catch(() => null);
     throw new Error(payload?.detail ?? `표를 불러오지 못했습니다 (HTTP ${res.status})`);
@@ -523,7 +525,7 @@ export async function getAttachmentText(
   parentId: string,
   itemId: string
 ): Promise<AttachmentTextPreview> {
-  const res = await fetch(`${attachmentBaseUrl(kind, parentId, itemId)}/text`);
+  const res = await apiFetch(`${attachmentBaseUrl(kind, parentId, itemId)}/text`);
   if (!res.ok) {
     const payload = await res.json().catch(() => null);
     throw new Error(payload?.detail ?? `텍스트를 불러오지 못했습니다 (HTTP ${res.status})`);
@@ -534,7 +536,7 @@ export async function getAttachmentText(
 // --- 대화 검색 ---
 
 export async function searchConversations(query: string): Promise<SearchResult[]> {
-  const res = await fetch(`${API_URL}/search?query=${encodeURIComponent(query)}`);
+  const res = await apiFetch(`${API_URL}/search?query=${encodeURIComponent(query)}`);
   if (!res.ok) throw new Error(`검색에 실패했습니다 (HTTP ${res.status})`);
   return res.json();
 }
@@ -623,7 +625,7 @@ export async function streamMessage(
 ): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/conversations/${conversationId}/messages`, {
+    res = await apiFetch(`${API_URL}/conversations/${conversationId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -657,7 +659,7 @@ export async function resumeStream(
 ): Promise<boolean> {
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/conversations/${conversationId}/stream`, { signal });
+    res = await apiFetch(`${API_URL}/conversations/${conversationId}/stream`, { signal });
   } catch {
     return false;
   }

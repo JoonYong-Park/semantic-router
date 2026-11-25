@@ -33,7 +33,7 @@ In dev the backend code is bind-mounted and served by the Flask dev server, so e
 
 There is no linter config. Verification is the smoke test, a container build, then hitting endpoints with `curl` (and looking at items in the DynamoDB admin GUI at http://localhost:8002).
 
-Deploys run on every push to `main`: `.github/workflows/deploy-lambda.yml` assumes the `joomini-github-deploy` IAM role through GitHub OIDC (no stored AWS keys; the role trusts only this repo's `main`), runs `backend/scripts/deploy_lambda.sh update` (Zappa) and then `scripts/deploy_frontend_lambda.sh`, and checks `/health`. Model API keys and `COGNITO_CLIENT_SECRET` come from GitHub Secrets and end up only in Lambda environment variables; `AWS_DEPLOY_ROLE_ARN`, `FRONTEND_ORIGIN`, `COGNITO_REDIRECT_URI`, `COGNITO_LOGOUT_URI` are repository variables. The scripts still run locally with the `joomini` AWS profile. (The old self-hosted `scripts/deploy.sh` flow is no longer triggered; docs/en/DEPLOYMENT.md describes it.) How to swap one of the 9 models: docs/en/MODEL_UPDATE.md (Korean: docs/ko/MODEL_UPDATE.md). The AWS move (Lambda + Zappa) is tracked in docs/ko/AWS_MIGRATION_LOG.md.
+Deploys run on every push to `main`: `.github/workflows/deploy-lambda.yml` assumes the `joomini-github-deploy` IAM role through GitHub OIDC (no stored AWS keys; the role trusts only this repo's `main`), runs `backend/scripts/deploy_lambda.sh update` (Zappa) and then `scripts/deploy_frontend_lambda.sh`, and checks `/api/health` and `/` through CloudFront. Users reach everything through one CloudFront distribution (`infra/cloudfront.yaml`, CloudFormation stack `joomini-cloudfront`): `/api/*` goes to API Gateway with the `/api` prefix stripped by a CloudFront Function (`/api/chat` → `/dev/chat`), `/_next/static/*` is cached, and everything else goes to the frontend Lambda, whose Function URL is `AWS_IAM` auth reachable only through CloudFront OAC. The frontend is built with `NEXT_PUBLIC_API_URL=/api` (same origin, so no CORS in prod), and the backend gets `API_PATH_PREFIX=/api` so auth cookie paths match what the browser sees (`/api/auth`). Model API keys and `COGNITO_CLIENT_SECRET` come from GitHub Secrets and end up only in Lambda environment variables; `AWS_DEPLOY_ROLE_ARN`, `FRONTEND_ORIGIN`, `COGNITO_REDIRECT_URI`, `COGNITO_LOGOUT_URI` are repository variables. The scripts still run locally with the `joomini` AWS profile. (The old self-hosted `scripts/deploy.sh` flow is no longer triggered; docs/en/DEPLOYMENT.md describes it.) How to swap one of the 9 models: docs/en/MODEL_UPDATE.md (Korean: docs/ko/MODEL_UPDATE.md). The AWS move (Lambda + Zappa) is tracked in docs/ko/AWS_MIGRATION_LOG.md.
 
 ## Data: one DynamoDB table, no migrations
 
@@ -80,12 +80,12 @@ Flask app built in `app/__init__.py` (`create_app()`; module-level `app` is what
 ```
 app/
 ├── __init__.py     create_app, CORS, error handler, router-model loading on first request, /health
-├── auth.py         current_user_id() (demo user now; Cognito claims later)
+├── auth.py         authenticate() (Cognito JWT, before_request) · current_user_id()
 ├── errors.py       ApiError(status, detail) → {"detail": ...}
 ├── serializers.py  response shapes (mirrored by frontend/lib/types.ts)
 ├── storage.py      file storage by key (local disk under UPLOAD_DIR now; swap for S3)
 ├── db/             dynamo.py (client, update_expr, Decimal conversion) · keys.py · repo/ (one function per access pattern)
-├── routes/         conversations · attachments · projects · settings · users · usage · misc (/search, /memory/extract-all, legacy /chat) · file_views (shared viewers)
+├── routes/         auth (/auth/login·callback·reissue·logout) · conversations · attachments · projects · settings · users · usage · misc (/search, /memory/extract-all, legacy /chat) · file_views (shared viewers)
 ├── chat/           turn.py (start_turn, _run_turn: the send path) · history.py (build_history) · context.py (memory text, DOC_TOOLS_GUIDE)
 │                   stream.py (TurnStream, active_turns) · title.py
 ├── services/       files.py (upload extraction, previews, blocks_for_model, run_in_background) · generated.py (save_generated_file)
@@ -358,9 +358,13 @@ To add a tool:
   - Updates go through `dynamo.update_expr()`, which aliases every attribute name (`name`, `ttl`, `source`, `size`, `status` are reserved words).
   - boto3 rejects `float`: `to_dynamo()` turns floats into `Decimal` and drops `None`; `from_dynamo()` turns them back.
   - Lookups by id across partitions use GSI3 and then check `owner_pk`. GSIs are eventually consistent, so right after a write read by key instead (e.g. `get_attachment_in_conv`).
-- **There is no login yet.** `auth.current_user_id()` returns the fixed `DEMO_USER_ID` (박준용 / joonyong.park.dev@gmail.com), seeded once per process by `ensure_profile` (never overwrites). With Cognito it will read the token's `sub` from `request.environ["serverless.event"]`; routes don't change.
+- **Login: Google → Cognito → BFF endpoints in `routes/auth.py`.** `/auth/login` (state + PKCE, `identity_provider=Google`), `/auth/callback` (code → tokens with the client secret, server-side only; ID token verified; `ensure_profile(sub, email, name)`; refresh token set as an HttpOnly, SameSite=Strict cookie on Path `{API_PATH_PREFIX}/auth`: `/auth` locally, `/api/auth` behind CloudFront), `/auth/reissue` (refresh cookie → new access token in the JSON body), `/auth/logout` (RevokeToken + clear cookie + Cognito logout URL). reissue/logout require `X-Requested-With: joomini` and a matching `Origin`.
+  - `auth.authenticate()` runs before every request except `/health`, `/auth/*`, and OPTIONS: it verifies the Bearer access token (JWKS RS256, iss, `token_use=access`, `client_id`, exp) and puts the claims in `g.user`. Missing or invalid → 401 (fail closed). `current_user_id()` returns `g.user["sub"]`; routes don't change.
+  - `AUTH_DISABLED=1` (local only, never deployed) falls back to the fixed `DEMO_USER_ID` and seeds its profile. Existing local data from before login lives under that demo id.
+  - Config: `COGNITO_REGION`, `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, `COGNITO_DOMAIN`, `COGNITO_REDIRECT_URI`, `COOKIE_SECURE` (0 only for local http) in `docker-compose.dev.yml`; `COGNITO_CLIENT_SECRET` only in `backend/.env` (git-ignored).
+  - Frontend: `lib/auth.ts` keeps the access token in a module variable (never localStorage), and `apiFetch` adds the Bearer header and retries once after `/auth/reissue` on 401. Every call in `lib/api.ts` goes through it (uploads via `xhrUpload`). `<img>`/`<iframe>`/downloads can't send headers, so file URLs go through `useAuthedObjectUrl` / `downloadAuthed` (blob URLs). `components/AuthGate.tsx` wraps `AppShell` and shows the login screen when reissue fails.
   - Ownership is structural: conversations and projects live under `USER#{uid}`, so another user's id simply isn't found (404, same as missing).
-  - The frontend reads the current user from `GET /users/me`. The sidebar 로그아웃 button is a deliberate no-op until login exists.
+  - `memory.extract.run_scheduled` still runs for `DEMO_USER_ID` only; it must iterate real users before scheduled extraction is enabled.
   - Background threads have no request context: pass `uid` explicitly, never call `current_user_id()` inside them.
 - Enum-like fields are plain strings validated by hand at the route (e.g. `MODES`, `COLORS`).
 - Response dicts are built in `serializers.py` so missing optional attributes come out as `null`, matching the old FastAPI shapes.

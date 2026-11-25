@@ -56,16 +56,21 @@ def create_app() -> Flask:
         if origin:
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Access-Control-Allow-Credentials"] = "true"
-            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
             resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         return resp
 
     from app import errors
+    from app import auth
     from app.routes import attachments, conversations, misc, projects, settings, usage, users
+    from app.routes import auth as auth_routes
 
     errors.register(app)
-    for module in (conversations, attachments, projects, settings, users, usage, misc):
+    for module in (auth_routes, conversations, attachments, projects, settings, users, usage, misc):
         app.register_blueprint(module.bp)
+
+    # 모든 API 요청은 Cognito access 토큰을 검증한다 (/health, /auth/*, OPTIONS 제외).
+    app.before_request(auth.authenticate)
 
     @app.before_request
     def _start_models():
@@ -73,13 +78,13 @@ def create_app() -> Flask:
 
     @app.before_request
     def _seed_demo_user():
-        # 로그인 전 단계라 기존 백엔드처럼 고정 사용자를 시드한다 (콜드 스타트마다 1회).
-        if not app.config.get("_seeded"):
-            from app.auth import DEMO_USER_EMAIL, DEMO_USER_ID, DEMO_USER_NAME
+        # 로그인을 끈 로컬 개발(AUTH_DISABLED=1)에서만 고정 사용자를 시드한다.
+        # 로그인 사용자의 프로필은 /auth/callback에서 ID 토큰으로 만든다.
+        if auth.auth_disabled() and not app.config.get("_seeded"):
             from app.db.repo import users as user_repo
 
             try:
-                user_repo.ensure_profile(DEMO_USER_ID, DEMO_USER_EMAIL, DEMO_USER_NAME)
+                user_repo.ensure_profile(auth.DEMO_USER_ID, auth.DEMO_USER_EMAIL, auth.DEMO_USER_NAME)
                 app.config["_seeded"] = True
             except Exception:
                 pass  # 테이블이 아직 없으면 /health가 원인을 알려준다

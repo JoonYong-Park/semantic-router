@@ -9,3 +9,7 @@ node_modules/
 uploads/
 backend/zappa_settings.json
 backend/zappa_settings.py
+
+# 동기화 도구가 만든 .env 사본(.env.xxxx)도 올라가지 않게 한다
+.env.*
+!.env.example

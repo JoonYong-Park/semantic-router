@@ -1,5 +1,6 @@
 "use client";
 
+import { logout } from "@/lib/auth";
 import {
   DragEvent,
   MouseEvent as ReactMouseEvent,
@@ -1171,8 +1172,9 @@ export default function Sidebar({
               type="button"
               role="menuitem"
               onClick={() => {
-                // 로그인 기능이 아직 없어서 일부러 아무 동작도 하지 않는다.
-                // 로그인이 붙으면 여기서 로그아웃(세션/토큰 삭제 후 로그인 화면 이동)을 처리한다.
+                setUserMenuPos(null);
+                // refresh 토큰 폐기 + 쿠키 삭제 → Cognito 로그아웃 → 로그인 화면
+                logout();
               }}
               className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
             >
