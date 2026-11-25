@@ -12,7 +12,9 @@
 
 import asyncio
 import logging
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from app.chat.context import DOC_TOOLS_GUIDE, memory_topic_to_text
 from app.chat.history import (
@@ -38,6 +40,8 @@ from app.routing.selector import bump_size, select_model
 from app.services.files import run_in_background
 from app.tools.base import ToolResult
 from app.tools.registry import get_tool_specs, run_tool
+
+KST = ZoneInfo("Asia/Seoul")
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -209,6 +213,9 @@ async def _run_turn(turn: TurnStream, ctx: dict) -> bool:
         ] + system_parts
     if doc_tools_enabled or edit_tools_enabled:
         system_parts.append(DOC_TOOLS_GUIDE)
+    # 모델은 오늘 날짜를 모른다. "오늘/내일/이번 주" 질문과 검색 결과의 최신 여부 판단에 쓴다.
+    now = datetime.now(KST)
+    system_parts.append(f"[현재 시각] {now:%Y-%m-%d %H:%M} KST ({'월화수목금토일'[now.weekday()]}요일)")
     if system_parts:
         history = [{"role": "system", "content": "\n\n".join(system_parts)}] + history
 

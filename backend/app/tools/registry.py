@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 from app.tools.documents import CREATE_DOCUMENT, CREATE_PRESENTATION, CREATE_SPREADSHEET
 from app.tools.edit import EDIT_DOCUMENT, INSPECT_DOCUMENT
 from app.tools.image import GENERATE_IMAGE
+from app.tools.weather import GET_WEATHER
 from app.tools.web_search import WEB_SEARCH
 from app.tools.base import ToolContext, ToolResult, ToolSpec
 
@@ -17,6 +18,7 @@ logger = logging.getLogger("uvicorn.error")
 
 _REGISTRY: dict[str, ToolSpec] = {
     WEB_SEARCH.name: WEB_SEARCH,
+    GET_WEATHER.name: GET_WEATHER,
     CREATE_DOCUMENT.name: CREATE_DOCUMENT,
     CREATE_SPREADSHEET.name: CREATE_SPREADSHEET,
     CREATE_PRESENTATION.name: CREATE_PRESENTATION,
@@ -31,10 +33,10 @@ def get_tool_specs(
     include_image_tools: bool = False,
     include_edit_tools: bool = False,
 ) -> list[ToolSpec]:
-    """요청에 실을 툴 목록. web_search는 항상, 나머지는 의도가 감지된 턴에만
+    """요청에 실을 툴 목록. web_search와 get_weather는 항상, 나머지는 의도가 감지된 턴에만
     노출한다(router.needs_file_tools / needs_image_tools / needs_edit_tools) -
     일반 질문에 툴 정의 토큰과 잘못된 호출을 줄이기 위함."""
-    specs = [WEB_SEARCH]
+    specs = [WEB_SEARCH, GET_WEATHER]
     if include_doc_tools:
         specs += [CREATE_DOCUMENT, CREATE_SPREADSHEET, CREATE_PRESENTATION]
     if include_image_tools:

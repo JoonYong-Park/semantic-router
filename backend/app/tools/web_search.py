@@ -2,7 +2,10 @@
 
 import logging
 
-from app.websearch.providers import SITE_HINT_DOMAINS, search_web
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from app.websearch.providers import search_web
 from app.tools.base import ToolContext, ToolResult, ToolSpec
 
 logger = logging.getLogger("uvicorn.error")
@@ -11,7 +14,10 @@ logger = logging.getLogger("uvicorn.error")
 # --- web_search (Tavily → Perplexity → Brave 폴백, search_web) ---
 
 WEB_SEARCH_TOOL_NAME = "web_search"
-WEB_SEARCH_DESCRIPTION = "최신 정보, 실시간 정보, 특정 사실 확인이 필요할 때 웹을 검색한다."
+WEB_SEARCH_DESCRIPTION = "최신 정보, 실시간 정보, 특정 사실 확인이 필요할 때 웹을 검색한다. 날씨는 get_weather를 쓴다."
+# 검색 결과 본문을 모델에 넘기는 길이. 메뉴 글자가 앞에 많은 페이지는 500자에서 본문이 잘렸다.
+SNIPPET_CHARS = 1500
+KST = ZoneInfo("Asia/Seoul")
 
 # Tavily는 기본적으로 최신순 필터 없이 검색해서, "오늘 날씨"처럼 시의성 있는
 # 질문에도 몇 년 전 글이 섞여 들어온다 (실제로 "2026년 9월 17일" 같은 날짜를
@@ -29,15 +35,6 @@ _WEB_SEARCH_PROPERTIES = {
             "중요하면 day나 week, 그렇지 않은 일반 지식/사실 확인이면 none."
         ),
     },
-    "site_hint": {
-        "type": "string",
-        "enum": ["weather", "none"],
-        "description": (
-            "실시간 날씨/기온/강수확률/미세먼지 질문이면 'weather'로 지정한다 - "
-            "일반 뉴스/블로그가 아니라 신뢰할 수 있는 기상 사이트로 검색을 좁힌다. "
-            "그 외 질문은 'none'."
-        ),
-    },
 }
 
 
@@ -45,13 +42,6 @@ def _normalize_time_range(value: str | None) -> str | None:
     """모델이 준 time_range 값을 Tavily가 받는 값으로 정리. "none"/빈 값/모델이
     스키마 밖의 값을 줬을 때는 전부 제한 없음(None)으로 취급한다."""
     if value in ("day", "week", "month", "year"):
-        return value
-    return None
-
-
-def _normalize_site_hint(value: str | None) -> str | None:
-    """site_hint도 time_range와 동일하게 스키마에 정의된 값만 인정한다."""
-    if value in SITE_HINT_DOMAINS:
         return value
     return None
 
@@ -71,7 +61,6 @@ async def _execute_web_search(arguments: dict, ctx: ToolContext) -> ToolResult:
             query,
             max_results=5,
             time_range=_normalize_time_range(arguments.get("time_range")),
-            site_hint=_normalize_site_hint(arguments.get("site_hint")),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("웹 검색 실패 (query=%s): %s", query, exc)
@@ -92,12 +81,15 @@ async def _execute_web_search(arguments: dict, ctx: ToolContext) -> ToolResult:
 
     results_text = "\n\n".join(
         f"[{i + 1}] {r.get('title', '')}\n{r.get('url', '')}\n"
-        f"{r.get('content', '')[:500]}"
+        f"{r.get('content', '')[:SNIPPET_CHARS]}"
         for i, r in enumerate(results)
     )
     return ToolResult(
         content=(
-            f"[웹 검색 결과: {query}]\n{results_text}\n\n"
+            f"[웹 검색 결과: {query}] (오늘: {datetime.now(KST):%Y-%m-%d} KST)\n{results_text}\n\n"
+            "검색 결과는 검색 엔진이 저장해 둔 페이지라 오래됐을 수 있다. 실시간·최근 정보가 필요한 "
+            "질문인데 결과의 날짜가 오늘과 다르거나 날짜를 알 수 없으면, 그 점을 답에 밝혀. "
+            "글자가 깨졌거나 메뉴뿐인 결과는 무시해.\n"
             "위 검색 결과를 참고해서 답변해. 답변 마지막에 실제로 "
             "참고한 출처만 아래 형식으로 표시해 (참고 안 한 결과는 빼고, "
             "위 검색 결과에 없는 URL은 지어내지 마):\n"
