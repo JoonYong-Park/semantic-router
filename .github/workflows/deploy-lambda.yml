@@ -51,6 +51,11 @@ jobs:
           aws-region: ap-northeast-2
           role-session-name: joomini-deploy-${{ github.run_id }}
 
+      # 베이스 이미지(Lambda Web Adapter 등)를 public.ecr.aws에서 받는다. 익명으로 받으면
+      # 공유 러너 IP 단위 한도("Data limit exceeded")에 걸릴 수 있어 로그인해서 받는다.
+      - name: Log in to Amazon ECR Public
+        run: aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
+
       - name: Deploy backend (Zappa update)
         env:
           FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
