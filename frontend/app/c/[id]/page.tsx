@@ -339,6 +339,8 @@ export default function ConversationPage() {
 
     if (body) {
       await streamMessage(convId, body, handlers, controller.signal);
+      // 서버는 done을 보낸 뒤 제목 생성까지 마치고 연결을 닫는다 → 닫힌 뒤 한 번 더 갱신하면 제목이 확실히 붙는다.
+      refreshConversations();
       return;
     }
     const resumed = await resumeStream(convId, handlers, controller.signal);

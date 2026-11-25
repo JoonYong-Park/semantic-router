@@ -9,6 +9,7 @@
 
 import logging
 from datetime import datetime
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -97,8 +98,12 @@ async def _execute_get_weather(arguments: dict, ctx: ToolContext) -> ToolResult:
             f"{day}: {_desc(daily['weather_code'][i])}, 최고 {daily['temperature_2m_max'][i]}°C / "
             f"최저 {daily['temperature_2m_min'][i]}°C, 강수확률 최대 {daily['precipitation_probability_max'][i]}%"
         )
+    # 답변 끝 출처 칩(프론트 lib/sources.ts)으로 보인다: 지역 날씨 페이지(네이버) + 데이터 출처(Open-Meteo)
+    naver = f"https://search.naver.com/search.naver?query={quote(f'{name} 날씨')}"
     lines.append(
-        "위 값으로 답해. 날씨 출처(Open-Meteo 등)나 출처 목록은 적지 마. "
+        "위 값으로 답해. 답변 본문에 출처 이름(Open-Meteo 등)은 쓰지 말고, 답변 맨 끝에 아래 출처 블록을 "
+        "그대로 붙여 (웹 검색도 했다면 그 출처를 이어서 번호를 매겨):\n"
+        f"---\n출처:\n- [1] {name} 날씨 (네이버) ({naver})\n- [2] Open-Meteo 날씨 예보 (https://open-meteo.com/)\n"
         "기상청 공식 특보나 예보가 필요한 질문이면 기상청 확인을 함께 권해."
     )
     return ToolResult(content="\n".join(lines))

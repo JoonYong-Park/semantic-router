@@ -31,6 +31,7 @@ const SITE_NAMES: Record<string, string> = {
   "github.com": "GitHub", "youtube.com": "YouTube", "gsretail.com": "GS리테일",
   "aws.amazon.com": "AWS", "cloud.google.com": "Google Cloud", "learn.microsoft.com": "Microsoft Learn",
   "openai.com": "OpenAI", "anthropic.com": "Anthropic", "nextjs.org": "Next.js", "python.org": "Python",
+  "open-meteo.com": "Open-Meteo",
 };
 
 // co.kr, go.kr처럼 두 칸짜리 최상위 도메인
