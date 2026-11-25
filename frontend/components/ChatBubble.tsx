@@ -8,6 +8,8 @@ import { formatHoverTime } from "@/lib/dateFormat";
 import { AttachmentChip, AttachmentTypeIcon } from "./AttachmentChip";
 import MarkdownContent from "./MarkdownContent";
 import ModelBadge from "./ModelBadge";
+import SourceChips from "./SourceChips";
+import { splitSources } from "@/lib/sources";
 
 function CopyIcon() {
   return (
@@ -190,6 +192,9 @@ export default function ChatBubble({
     );
   }
 
+  // 답변 끝 "출처:" 목록은 본문에서 빼고 칩으로 보여 준다 (복사 버튼은 원문 그대로)
+  const { body, sources } = splitSources(message.content);
+
   return (
     <div className="group flex flex-col items-start gap-1">
       {message.selectedModel && (
@@ -207,7 +212,8 @@ export default function ChatBubble({
             : "text-gray-900 dark:text-gray-100"
         }`}
       >
-        <MarkdownContent content={message.content} />
+        <MarkdownContent content={body} />
+        <SourceChips sources={sources} />
         {message.attachments && message.attachments.length > 0 && (
           <div className="mt-2 flex flex-col gap-2">
             {message.attachments.map((a) => (
