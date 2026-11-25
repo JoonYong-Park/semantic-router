@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Joomini - CloudFront용 HTTPS 인증서 (ACM). CloudFront는 us-east-1의 인증서만 쓸 수 있어서
+  이 스택만 us-east-1에 둔다. DNS 검증 레코드는 Route 53 호스팅 영역에 자동으로 만들어진다.
+
+  배포 (저장소 루트에서):
+    aws cloudformation deploy --profile joomini --region us-east-1 \
+      --stack-name joomini-certificate --template-file infra/certificate.yaml \
+      --parameter-overrides DomainName=joomini.dev HostedZoneId=<Route 53 호스팅 영역 ID>
+  출력 CertificateArn을 infra/cloudfront.yaml의 CertificateArn 파라미터로 넘긴다.
+
+Parameters:
+  DomainName:
+    Type: String
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+
+Resources:
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      SubjectAlternativeNames:
+        - !Sub www.${DomainName}
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+        - DomainName: !Sub www.${DomainName}
+          HostedZoneId: !Ref HostedZoneId
+
+Outputs:
+  CertificateArn:
+    Value: !Ref Certificate
