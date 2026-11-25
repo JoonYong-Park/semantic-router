@@ -288,10 +288,26 @@ def extract_all_sequentially(uid, conv_ids: list[str]) -> None:
 
 
 def run_scheduled(event=None, context=None) -> None:
-    """하루 2회(07:00, 12:30 KST) 예약 실행 진입점. Zappa events에 이 함수를 등록한다.
-    로그인 전이라 데모 사용자 한 명만 처리한다."""
-    from app.auth import DEMO_USER_ID
+    """하루 2회(07:00, 12:30 KST) 예약 실행 진입점. Zappa events(EventBridge)에 이 함수를 등록한다.
 
-    convs = conv_repo.list_conversations(DEMO_USER_ID)
-    extract_all_sequentially(DEMO_USER_ID, [c["id"] for c in convs])
-    logger.info("자동 메모리 추출 완료 (%d개 대화방)", len(convs))
+    모든 사용자의 대화를 차례로 본다. 대화마다 마지막으로 요약한 지점 이후의 새 메시지만 보내므로
+    새 메시지가 없는 대화는 조회 두 번으로 끝난다. Lambda 제한 시간 안에 못 끝내면 남은 사용자는
+    다음 실행에서 이어서 처리된다(새 메시지가 그대로 남아 있으니 놓치지 않는다).
+    """
+    from app.auth import DEMO_USER_ID
+    from app.db.repo import users as user_repo
+
+    def time_left_ms() -> int:
+        return context.get_remaining_time_in_millis() if context else 10**9
+
+    users = [u for u in user_repo.list_user_ids() if u != str(DEMO_USER_ID)]
+    done_users = done_convs = 0
+    for uid in users:
+        if time_left_ms() < 20_000:
+            logger.warning("자동 메모리 추출: 시간이 부족해 %d명 중 %d명까지만 처리", len(users), done_users)
+            break
+        convs = conv_repo.list_conversations(uid)
+        extract_all_sequentially(uid, [c["id"] for c in convs])
+        done_users += 1
+        done_convs += len(convs)
+    logger.info("자동 메모리 추출 완료 (사용자 %d명, 대화방 %d개)", done_users, done_convs)

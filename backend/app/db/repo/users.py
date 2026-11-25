@@ -1,5 +1,7 @@
 """사용자 프로필과 설정 (AP1, AP2)."""
 
+from boto3.dynamodb.conditions import Attr
+
 from app.db import dynamo, keys
 from app.db.dynamo import now_iso, strip_keys, to_dynamo
 
@@ -21,6 +23,19 @@ def ensure_profile(uid, email: str, name: str, role: str = "user") -> dict:
     except dynamo.client().exceptions.ConditionalCheckFailedException:
         pass
     return get_profile(uid)
+
+
+def list_user_ids() -> list[str]:
+    """모든 사용자 id. 정기 작업(메모리 추출)용이라 Scan을 쓴다 - 사용자 수가 적은 동안은 충분하고,
+    많아지면 PROFILE 항목에 GSI를 두거나 "최근 활동한 사용자" 목록으로 바꾼다."""
+    ids: list[str] = []
+    kwargs = {"FilterExpression": Attr("SK").eq(keys.PROFILE), "ProjectionExpression": "id"}
+    while True:
+        resp = dynamo.table().scan(**kwargs)
+        ids += [str(i["id"]) for i in resp.get("Items", []) if i.get("id")]
+        if "LastEvaluatedKey" not in resp:
+            return ids
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
 
 def set_avatar_updated(uid, when: str | None) -> None:
