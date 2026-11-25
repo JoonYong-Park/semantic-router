@@ -4,13 +4,15 @@
 // 시작할 때 /auth/reissue로 access 토큰을 받아 본다 - refresh 쿠키가 살아 있으면 바로 로그인 상태.
 // 이후 재발급이 실패하면(refresh 만료/폐기) onAuthChange로 알림을 받아 로그인 화면으로 돌아간다.
 // PUBLIC_PATHS(개인정보처리방침 등)는 로그인 없이, 앱 화면(AppShell) 밖에서 page만 보여준다.
+// 게스트 모드(lib/guest.ts): 로그인 없이 더미 데이터로 앱을 둘러본다. 서버 요청은 없고 쓰기는 막힌다.
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { onAuthChange, refreshAccessToken, startLogin } from "@/lib/auth";
+import { enterGuest, isGuest } from "@/lib/guest";
 
 const PUBLIC_PATHS = ["/privacy"];
 
-type Status = "checking" | "in" | "out";
+type Status = "checking" | "in" | "out" | "guest";
 
 export default function AuthGate({ children, page }: { children: React.ReactNode; page: React.ReactNode }) {
   const isPublic = PUBLIC_PATHS.includes(usePathname());
@@ -19,6 +21,10 @@ export default function AuthGate({ children, page }: { children: React.ReactNode
 
   useEffect(() => {
     if (isPublic) return;
+    if (isGuest()) {
+      setStatus("guest");
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     if (params.has("login_error")) {
       setLoginError(true);
@@ -38,12 +44,45 @@ export default function AuthGate({ children, page }: { children: React.ReactNode
     return <div className="h-screen w-full bg-white dark:bg-gray-950" />;
   }
   if (status === "out") {
-    return <LoginScreen error={loginError} />;
+    return (
+      <LoginScreen
+        error={loginError}
+        onGuest={() => {
+          enterGuest();
+          setStatus("guest");
+        }}
+      />
+    );
+  }
+  if (status === "guest") {
+    return (
+      <>
+        {children}
+        <GuestBanner />
+      </>
+    );
   }
   return <>{children}</>;
 }
 
-function LoginScreen({ error }: { error: boolean }) {
+function GuestBanner() {
+  return (
+    <div className="pointer-events-none fixed right-4 top-3 z-50 flex justify-end pl-4">
+      <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-amber-200 bg-amber-50 py-1.5 pl-4 pr-1.5 text-xs text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/80 dark:text-amber-200">
+        <span>게스트 모드 · 예시 데이터로 둘러보는 중이에요</span>
+        <button
+          type="button"
+          onClick={startLogin}
+          className="rounded-full bg-gray-900 px-3 py-1 font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
+        >
+          Google로 로그인
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen({ error, onGuest }: { error: boolean; onGuest: () => void }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4 dark:bg-gray-950">
       <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm dark:border-gray-800 dark:bg-gray-900">
@@ -65,6 +104,14 @@ function LoginScreen({ error }: { error: boolean }) {
         >
           <GoogleIcon />
           Google 계정으로 계속하기
+        </button>
+
+        <button
+          type="button"
+          onClick={onGuest}
+          className="mt-3 w-full rounded-xl px-4 py-2.5 text-sm text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+        >
+          로그인 없이 둘러보기
         </button>
 
         <a href="/privacy" className="mt-6 inline-block text-xs text-gray-400 hover:underline dark:text-gray-500">

@@ -16,6 +16,7 @@ import {
 import ModelPicker from "@/components/ModelPicker";
 import UsageRing from "@/components/UsageRing";
 import { AttachmentChip } from "@/components/AttachmentChip";
+import { isGuest } from "@/lib/guest";
 import { Mode, PendingAttachment, Size } from "@/lib/types";
 
 // 서버(attachments.py ALL_ALLOWED_EXTS)와 맞춰둔 허용 확장자 - <input accept>와
@@ -61,6 +62,8 @@ export default function ChatScreen({
   const isComposingRef = useRef(false);
 
   const isUploadingAttachment = attachments.some((a) => a.status === "uploading");
+  // 게스트 모드는 읽기 전용 - 입력·첨부·전송을 막는다 (AuthGate가 로그인 상태를 정한 뒤에만 렌더링된다).
+  const guest = isGuest();
 
   // 입력창 자동 높이 조절 (Shift+Enter 줄바꿈 시 늘어나도록)
   useEffect(() => {
@@ -171,6 +174,7 @@ export default function ChatScreen({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
+              disabled={guest}
               aria-label="파일 첨부"
               className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-gray-500 hover:bg-gray-100 disabled:opacity-30 dark:text-gray-400 dark:hover:bg-gray-800"
             >
@@ -189,7 +193,12 @@ export default function ChatScreen({
               ref={textareaRef}
               rows={1}
               className="max-h-40 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2 text-sm text-gray-900 outline-none placeholder:overflow-hidden placeholder:whitespace-nowrap placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
-              placeholder="메시지를 입력하세요... (Shift+Enter로 줄바꿈)"
+              placeholder={
+                guest
+                  ? "게스트 모드에서는 질문할 수 없어요. 로그인하면 바로 사용할 수 있어요."
+                  : "메시지를 입력하세요... (Shift+Enter로 줄바꿈)"
+              }
+              disabled={guest}
               value={input}
               onChange={(e) => onInputChange(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -206,7 +215,7 @@ export default function ChatScreen({
             <button
               type="button"
               onClick={onSend}
-              disabled={disabled || isUploadingAttachment || (!input.trim() && readyCount === 0)}
+              disabled={guest || disabled || isUploadingAttachment || (!input.trim() && readyCount === 0)}
               aria-label="전송"
               className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-900 text-white disabled:opacity-30 dark:bg-white dark:text-gray-900"
             >
