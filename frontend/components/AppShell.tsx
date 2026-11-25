@@ -16,7 +16,6 @@ import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import SearchModal from "@/components/SearchModal";
 import SettingsWindow, { SettingsTab } from "@/components/SettingsWindow";
-import MemoryUpdateButton from "@/components/MemoryUpdateButton";
 import { AppDataContext, AppDataContextValue } from "@/contexts/AppDataContext";
 import {
   createProject,
@@ -361,7 +360,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           />
         )}
 
-        <MemoryUpdateButton />
 
         {children}
       </div>

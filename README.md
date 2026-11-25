@@ -100,11 +100,6 @@ Limits:
 
 ## Run
 
-There are two compose files — pick the one matching where you're running this:
-
-- **`docker-compose.dev.yml`** — local development. CORS/API URL are hardcoded to `localhost`.
-- **`docker-compose.yml`** — on-premise/server deploy. Uses `SERVER_IP` from `.env` for CORS/API URL; without it, requests silently fail with a CORS error.
-
 ### Local development
 
 ```bash
@@ -113,43 +108,35 @@ cp .env.example .env
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-### On-premise / server deploy
-
-```bash
-cp .env.example .env
-
-docker compose up -d --build   # uses docker-compose.yml
-```
-
-- Frontend: http://localhost:3000 (or `http://$SERVER_IP:3000` on a server)
-- Backend: http://localhost:8000/health (or `http://$SERVER_IP:8000/health`)
+- Frontend: http://localhost:3000
+- Backend: http://localhost:8000/health
+- DynamoDB admin: http://localhost:8002
 
 On first start, classifier models are downloaded from Hugging Face and cached in the `backend_hf_cache` volume. Manual model selection works before the classifiers finish loading.
 
-The commands below all default to `docker-compose.yml` — for local dev, add `-f docker-compose.dev.yml` to each:
-
 ```bash
+C="docker compose -f docker-compose.dev.yml"
+
 # Status / logs
-docker compose ps
-docker compose logs -f backend
+$C ps
+$C logs -f backend
 
 # Health check (pretty-printed)
 curl -s http://localhost:8000/health | python3 -m json.tool
 
 # Rebuild after code changes
-docker compose up -d --build
-docker compose up -d --build backend   # backend only
+$C up -d --build
+$C up -d --build backend   # backend only
 
 # Stop
-docker compose stop          # stop containers (volumes kept)
-docker compose down          # remove containers (model cache kept)
-docker compose down -v      # also delete volumes (models re-download, DynamoDB data wiped)
-
-# memory test
-docker compose down
-docker volume rm semantic-router_dynamodb_data
-docker compose up -d
+$C stop          # stop containers (volumes kept)
+$C down          # remove containers (model cache kept)
+$C down -v       # also delete volumes (models re-download, DynamoDB data wiped)
 ```
+
+### Deploy (AWS)
+
+Pushing to `main` deploys with GitHub Actions (`.github/workflows/deploy-lambda.yml`): the backend goes to API Gateway + Lambda with Zappa, the frontend to Lambda, both behind one CloudFront distribution (`infra/`). See [docs/ko/AWS_DEPLOY.md](docs/ko/AWS_DEPLOY.md).
 
 ## License
 

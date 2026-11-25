@@ -76,6 +76,11 @@ def main() -> None:
             "timeout_seconds": 120,
             "ephemeral_storage": {"Size": 2048},
             "keep_warm": True,
+            # 메모리 자동 추출: 매일 07:00, 12:30 KST (EventBridge는 UTC 기준)
+            "events": [
+                {"function": "app.memory.extract.run_scheduled", "expression": "cron(0 22 * * ? *)"},
+                {"function": "app.memory.extract.run_scheduled", "expression": "cron(30 3 * * ? *)"},
+            ],
             "binary_support": True,
             "cors": False,  # CloudFront 한 도메인이라 CORS가 필요 없다. 로컬은 Flask(app/__init__.py)가 처리
             "environment_variables": {

@@ -1,6 +1,7 @@
 "use client";
 
-import { logout } from "@/lib/auth";
+import { logout, startLogin } from "@/lib/auth";
+import { isGuest } from "@/lib/guest";
 import {
   DragEvent,
   MouseEvent as ReactMouseEvent,
@@ -1111,6 +1112,20 @@ export default function Sidebar({
       </nav>
 
       <div className="flex flex-col gap-1 border-t border-gray-200 px-2 py-2 dark:border-gray-800">
+        {/* 게스트 모드 안내 - 화면 위에 띄우지 않고 사이드바 아래에 둔다(본문을 가리지 않게) */}
+        {isGuest() && showFull && (
+          <div className="mb-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/60 dark:text-amber-200">
+            <p className="font-medium">게스트 모드</p>
+            <p className="mt-0.5 text-amber-800/80 dark:text-amber-200/80">예시 데이터로 둘러보는 중이에요.</p>
+            <button
+              type="button"
+              onClick={startLogin}
+              className="mt-2 w-full rounded-md bg-gray-900 px-2 py-1.5 font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
+            >
+              Google로 로그인
+            </button>
+          </div>
+        )}
         <button
           type="button"
           data-user-menu-trigger
@@ -1179,7 +1194,7 @@ export default function Sidebar({
               className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
             >
               <LogOutIcon />
-              로그아웃
+              {isGuest() ? "둘러보기 끝내기" : "로그아웃"}
             </button>
           </div>,
           document.body

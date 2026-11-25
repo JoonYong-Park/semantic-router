@@ -55,31 +55,9 @@ export default function AuthGate({ children, page }: { children: React.ReactNode
     );
   }
   if (status === "guest") {
-    return (
-      <>
-        {children}
-        <GuestBanner />
-      </>
-    );
+    return <>{children}</>; // 게스트 안내는 사이드바(Sidebar.tsx)에 있다
   }
   return <>{children}</>;
-}
-
-function GuestBanner() {
-  return (
-    <div className="pointer-events-none fixed right-4 top-3 z-50 flex justify-end pl-4">
-      <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-amber-200 bg-amber-50 py-1.5 pl-4 pr-1.5 text-xs text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/80 dark:text-amber-200">
-        <span>게스트 모드 · 예시 데이터로 둘러보는 중이에요</span>
-        <button
-          type="button"
-          onClick={startLogin}
-          className="rounded-full bg-gray-900 px-3 py-1 font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-        >
-          Google로 로그인
-        </button>
-      </div>
-    </div>
-  );
 }
 
 function LoginScreen({ error, onGuest }: { error: boolean; onGuest: () => void }) {
