@@ -75,6 +75,68 @@ function xhrUpload<T>(url: string, file: File, onProgress?: (percent: number) =>
   })();
 }
 
+/** S3에 presigned POST로 바로 올린다 (진행률 때문에 XHR). 성공하면 S3가 204를 준다. */
+function s3PostUpload(
+  url: string,
+  fields: Record<string, string>,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        // 마지막 5%는 서버의 완료 처리(추출 시작) 몫으로 남겨 둔다
+        onProgress(Math.min(95, Math.round((e.loaded / e.total) * 95)));
+      }
+    };
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300
+        ? resolve()
+        : reject(new Error(xhr.status === 400 ? "파일이 너무 크거나 형식이 올바르지 않습니다." : `업로드 실패 (S3 ${xhr.status})`));
+    xhr.onerror = () => reject(new Error("파일 저장소에 연결할 수 없습니다."));
+    const form = new FormData();
+    Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+    form.append("file", file); // file은 반드시 마지막 필드
+    xhr.send(form);
+  });
+}
+
+async function errorDetail(res: Response, fallback: string): Promise<string> {
+  const payload = await res.json().catch(() => null);
+  return typeof payload?.detail === "string" ? payload.detail : `${fallback} (HTTP ${res.status})`;
+}
+
+/**
+ * 파일 업로드. 배포에서는 Lambda 요청 크기 상한(6MB)을 피하려고 본문을 서버로 보내지 않는다:
+ * upload-url(presigned POST) → S3에 직접 업로드 → complete(서버가 크기 확인 후 등록).
+ * 버킷이 없는 로컬에서는 서버가 mode=multipart를 돌려주고 예전처럼 본문을 서버로 보낸다.
+ */
+async function uploadFile<T>(base: string, file: File, onProgress?: (percent: number) => void): Promise<T> {
+  if (isGuest()) throw new Error(GUEST_READONLY_MESSAGE);
+  const startRes = await apiFetch(`${base}/upload-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, size: file.size }),
+  });
+  if (!startRes.ok) throw new Error(await errorDetail(startRes, "업로드를 시작하지 못했습니다"));
+  const start: { mode: "s3" | "multipart"; upload_id?: string; url?: string; fields?: Record<string, string> } =
+    await startRes.json();
+  if (start.mode !== "s3" || !start.url || !start.fields || !start.upload_id) {
+    return xhrUpload<T>(base, file, onProgress);
+  }
+  await s3PostUpload(start.url, start.fields, file, onProgress);
+  const doneRes = await apiFetch(`${base}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ upload_id: start.upload_id, filename: file.name }),
+  });
+  if (!doneRes.ok) throw new Error(await errorDetail(doneRes, "업로드를 마치지 못했습니다"));
+  onProgress?.(100);
+  return doneRes.json();
+}
+
 /**
  * 인증이 필요한 파일을 받아 blob URL로 돌려준다. <img>/<iframe>/<a href>는 Authorization
  * 헤더를 못 붙여서 파일 URL을 바로 넣지 않고 이걸 거친다. 다 쓰면 URL.revokeObjectURL.
@@ -381,7 +443,7 @@ export function uploadProjectFile(
   file: File,
   onProgress?: (percent: number) => void
 ): Promise<ProjectFilesOut["files"][number]> {
-  return xhrUpload(`${API_URL}/projects/${projectId}/files`, file, onProgress);
+  return uploadFile(`${API_URL}/projects/${projectId}/files`, file, onProgress);
 }
 
 export async function deleteProjectFile(projectId: string, fileId: string): Promise<void> {
@@ -428,7 +490,7 @@ export function uploadAttachment(
   file: File,
   onProgress?: (percent: number) => void
 ): Promise<AttachmentOut> {
-  return xhrUpload(`${API_URL}/conversations/${conversationId}/attachments`, file, onProgress);
+  return uploadFile(`${API_URL}/conversations/${conversationId}/attachments`, file, onProgress);
 }
 
 export async function deleteAttachment(

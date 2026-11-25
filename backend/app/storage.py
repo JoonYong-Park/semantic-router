@@ -65,6 +65,39 @@ def upload_local(key: str) -> None:
             _s3().upload_file(str(p), BUCKET, key)
 
 
+@lru_cache(maxsize=1)
+def _s3_presign():
+    """브라우저가 직접 올릴 주소를 만드는 클라이언트. 리전 엔드포인트를 써야 새 버킷에서
+    전역 엔드포인트 리디렉션(307) 없이 바로 올라가고 CORS도 한 번에 통과한다."""
+    import boto3
+    from botocore.config import Config
+
+    region = os.environ.get("AWS_REGION", "ap-northeast-2")
+    return boto3.client("s3", region_name=region, endpoint_url=f"https://s3.{region}.amazonaws.com",
+                        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
+
+
+def presigned_post(key: str, max_bytes: int, expires: int = 300) -> dict | None:
+    """브라우저가 S3에 직접 올리는 presigned POST ({url, fields}). 버킷이 없으면(로컬) None.
+    키와 크기 범위를 서명에 넣어, 다른 위치나 상한보다 큰 파일은 S3가 거절한다."""
+    if not BUCKET:
+        return None
+    return _s3_presign().generate_presigned_post(
+        BUCKET, key, Conditions=[["content-length-range", 1, max_bytes]], ExpiresIn=expires,
+    )
+
+
+def size_of(key: str) -> int | None:
+    """올라간 파일 크기. 없으면 None."""
+    if BUCKET:
+        try:
+            return int(_s3().head_object(Bucket=BUCKET, Key=key)["ContentLength"])
+        except Exception:  # noqa: BLE001 - 404, 권한 등은 모두 "없음"으로 본다
+            return None
+    p = _local(key)
+    return p.stat().st_size if p.exists() else None
+
+
 def write(key: str, data: bytes) -> Path:
     p = _local(key)
     p.parent.mkdir(parents=True, exist_ok=True)
