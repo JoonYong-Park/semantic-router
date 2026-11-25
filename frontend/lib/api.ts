@@ -22,6 +22,7 @@ import {
 } from "./types";
 
 import { API_URL, apiFetch, getAccessToken, refreshAccessToken } from "./auth";
+import { GUEST_READONLY_MESSAGE, isGuest } from "./guest";
 
 /**
  * 업로드 진행률(onProgress)이 필요해 XHR을 쓴다(fetch는 업로드 진행률 이벤트가 없다).
@@ -46,6 +47,7 @@ function xhrUpload<T>(url: string, file: File, onProgress?: (percent: number) =>
     });
 
   return (async () => {
+    if (isGuest()) throw new Error(GUEST_READONLY_MESSAGE);
     let res = await attempt(await getAccessToken());
     if (res.status === 401) {
       const fresh = await refreshAccessToken();

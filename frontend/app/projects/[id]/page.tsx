@@ -20,6 +20,7 @@ import {
   uploadProjectFile,
 } from "@/lib/api";
 import { useAppData } from "@/contexts/AppDataContext";
+import { isGuest } from "@/lib/guest";
 import { stashPendingMessage } from "@/lib/pendingMessage";
 import { Mode, PendingAttachment, Project, ProjectColor, ProjectFile, Size } from "@/lib/types";
 import { AttachmentChip, AttachmentTypeIcon, truncateFilename } from "@/components/AttachmentChip";
@@ -146,6 +147,7 @@ export default function ProjectPage() {
   const [extractStatus, setExtractStatus] = useState<"idle" | "loading" | "done">("idle");
   const [viewerFile, setViewerFile] = useState<ViewerAttachment | null>(null);
   const [quickInput, setQuickInput] = useState("");
+  const guest = isGuest(); // 게스트 모드는 읽기 전용
   const [starting, setStarting] = useState(false);
   // 새 채팅에 쓸 모델 - "/" 새 채팅 화면과 같은 기본값(Auto, 수동 선택 시 medium).
   const [mode, setMode] = useState<Mode>(DEFAULT_MODE);
@@ -536,8 +538,9 @@ export default function ProjectPage() {
               <button
                 type="button"
                 onClick={() => chatFileInputRef.current?.click()}
+                disabled={guest}
                 aria-label="파일 첨부"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-gray-500 hover:bg-gray-100 disabled:opacity-30 dark:text-gray-400 dark:hover:bg-gray-800"
               >
                 <PaperclipIcon />
               </button>
@@ -545,7 +548,8 @@ export default function ProjectPage() {
                 value={quickInput}
                 onChange={(e) => setQuickInput(e.target.value)}
                 onKeyDown={handleQuickInputKeyDown}
-                placeholder="이 프로젝트에서 새로 시작할 메시지를 입력하세요"
+                placeholder={guest ? "게스트 모드에서는 질문할 수 없어요" : "이 프로젝트에서 새로 시작할 메시지를 입력하세요"}
+                disabled={guest}
                 className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
               />
               <ModelPicker
@@ -560,7 +564,7 @@ export default function ProjectPage() {
               <button
                 type="button"
                 onClick={handleStartChat}
-                disabled={starting || isUploadingChatAttachment}
+                disabled={guest || starting || isUploadingChatAttachment}
                 aria-label="새 채팅 시작"
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-900 text-white disabled:opacity-30 dark:bg-white dark:text-gray-900"
               >
@@ -648,6 +652,7 @@ export default function ProjectPage() {
               onChange={(e) => setInstruction(e.target.value)}
               onBlur={handleSaveInstruction}
               placeholder="이 프로젝트에 속한 채팅 전체에 적용할 지침을 입력하세요"
+              readOnly={guest}
               className="resize-none rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100 dark:placeholder:text-gray-500"
             />
             {saving && <span className="text-xs text-gray-400 dark:text-gray-500">저장 중...</span>}

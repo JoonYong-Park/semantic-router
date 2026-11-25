@@ -3,6 +3,8 @@
 //   → 새로고침하면 사라지고, 앱 시작 때 /auth/reissue로 다시 받는다.
 // - refresh 토큰은 백엔드가 HttpOnly 쿠키(Path=/auth)로 관리해 JS가 읽을 수 없다.
 // - 모든 API 호출은 apiFetch를 거친다: Bearer 헤더를 붙이고, 401이면 한 번 재발급 후 재시도.
+// - 게스트 모드(lib/guest.ts)면 서버로 보내지 않고 더미 응답을 돌려준다.
+import { exitGuest, guestResponse, isGuest } from "./guest";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -61,6 +63,7 @@ export async function getAccessToken(): Promise<string | null> {
 
 /** fetch와 같은 모양. Authorization 헤더를 붙이고 401이면 재발급 후 한 번 다시 보낸다. */
 export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  if (isGuest()) return guestResponse(url, init, API_URL);
   const send = (token: string | null) => {
     const headers = new Headers(init.headers);
     if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -74,11 +77,17 @@ export async function apiFetch(url: string, init: RequestInit = {}): Promise<Res
 
 /** Google 로그인 시작 - 백엔드가 Cognito(→ Google)로 보낸다. */
 export function startLogin() {
+  exitGuest();
   window.location.href = `${API_URL}/auth/login`;
 }
 
 /** refresh 토큰 폐기 + 쿠키 삭제 후 Cognito 로그아웃(→ 다시 우리 첫 화면). */
 export async function logout() {
+  if (isGuest()) {
+    exitGuest();
+    window.location.href = "/";
+    return;
+  }
   let next = "/";
   try {
     const res = await fetch(`${API_URL}/auth/logout`, {
