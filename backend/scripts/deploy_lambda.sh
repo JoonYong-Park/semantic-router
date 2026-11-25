@@ -85,6 +85,17 @@ aws ecr get-login-password --region "$REGION" \
 docker tag "joomini-lambda:${TAG}" "$URI"
 docker push -q "$URI"
 
+log "4-1) 실행 역할에 앱 추가 권한 (zappa update는 extra_permissions를 역할에 다시 반영하지 않는다)"
+APP_ROLE="joomini-dev-ZappaLambdaExecutionRole"
+if aws iam get-role --role-name "$APP_ROLE" >/dev/null 2>&1; then
+  aws iam put-role-policy --role-name "$APP_ROLE" --policy-name joomini-app-extra --policy-document "$(python3 - "$ROOT/backend/zappa_settings.json" <<'PY'
+import json, sys
+perms = json.load(open(sys.argv[1]))["dev"].get("extra_permissions", [])
+print(json.dumps({"Version": "2012-10-17", "Statement": perms}))
+PY
+)"
+fi
+
 log "5) zappa ${MODE} dev"
 zappa "$MODE" dev -d "$URI"
 
