@@ -704,7 +704,7 @@ export default function ProjectPage() {
                     ? "업데이트 중..."
                     : extractStatus === "done"
                       ? "완료"
-                      : "프로젝트 메모리 업데이트(TEST)"}
+                      : "메모리 업데이트"}
                 </button>
               </div>
             </div>

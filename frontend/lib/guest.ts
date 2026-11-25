@@ -53,7 +53,7 @@ const PROJECTS: Project[] = [
   {
     id: "guest-p-portfolio",
     name: "포트폴리오 준비",
-    instruction: "답변은 면접에서 말하듯 짧고 구체적으로. 숫자와 근거를 함께 적어 줘.",
+    instruction: "답변은 발표하듯 짧고 구체적으로. 숫자와 근거를 함께 적어 줘.",
     max_capacity_bytes: 50 * 1024 * 1024,
     pinned: true,
     sort_order: 0,
@@ -188,7 +188,7 @@ const MEMORY: MemoryOverview = {
           id: "guest-mem-1",
           name: "관심 분야",
           summary: "AWS 서버리스와 LLM 서비스 개발에 관심이 많다.",
-          details: ["Lambda, DynamoDB로 서비스를 운영 중", "면접 준비 중"],
+          details: ["Lambda, DynamoDB로 서비스를 운영 중", "포트폴리오 정리 중"],
           updated_at: ago(3),
         },
       ],
