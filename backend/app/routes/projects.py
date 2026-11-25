@@ -11,7 +11,7 @@ from app.db.repo import projects as project_repo
 from app.errors import ApiError
 from app.memory import extract as memory_extract
 from app.routes import file_views
-from app.routes.attachments import read_upload
+from app.routes.attachments import finish_direct_upload, read_upload, start_direct_upload
 from app.serializers import project_file_out, project_out
 from app.services import files
 
@@ -97,6 +97,41 @@ def upload_project_file(pid):
     item = project_repo.add_project_file(
         current_user_id(), pid, filename or f"{fid}.{ext}", key,
         files.MIME_BY_EXT.get(ext, "application/octet-stream"), len(content), fid=fid,
+    )
+    files.run_in_background(_process_in_background, pid, item)
+    return jsonify(project_file_out(item))
+
+
+def _check_capacity(project: dict, size: int) -> None:
+    used = int(project.get("files_total_bytes", 0))
+    limit = int(project["max_capacity_bytes"])
+    if used + size > limit:
+        raise ApiError(413, f"프로젝트 저장 용량을 초과합니다 ({used + size} / {limit} bytes).")
+
+
+@bp.post("/<pid>/files/upload-url")
+def project_file_upload_url(pid):
+    project = owned_project(pid)
+    resp, size = start_direct_upload(files.project_dir(pid))
+    _check_capacity(project, size)
+    return jsonify(resp)
+
+
+@bp.post("/<pid>/files/complete")
+def complete_project_file_upload(pid):
+    project = owned_project(pid)
+    filename, ext, fid, key, size = finish_direct_upload(files.project_dir(pid))
+    for f in project_repo.list_project_files(pid):
+        if f["id"] == fid:  # 같은 업로드를 두 번 완료 요청한 경우
+            return jsonify(project_file_out(f))
+    try:
+        _check_capacity(project, size)
+    except ApiError:
+        storage.delete(key)
+        raise
+    item = project_repo.add_project_file(
+        current_user_id(), pid, filename or f"{fid}.{ext}", key,
+        files.MIME_BY_EXT.get(ext, "application/octet-stream"), size, fid=fid,
     )
     files.run_in_background(_process_in_background, pid, item)
     return jsonify(project_file_out(item))

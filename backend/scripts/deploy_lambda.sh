@@ -67,6 +67,10 @@ if ! aws s3api head-bucket --bucket "$FILES_BUCKET" >/dev/null 2>&1; then
     --create-bucket-configuration LocationConstraint="$REGION" >/dev/null   # 기본값: 퍼블릭 접근 차단
   log "    S3 버킷 생성: $FILES_BUCKET"
 fi
+# 브라우저가 presigned POST로 파일을 바로 올린다(Lambda 요청 크기 6MB 상한 회피). 서비스 도메인에서만 허용.
+if [ -n "${FRONTEND_ORIGIN:-}" ] && [ "${FRONTEND_ORIGIN}" != "*" ]; then
+  aws s3api put-bucket-cors --bucket "$FILES_BUCKET" --cors-configuration "{\"CORSRules\":[{\"AllowedOrigins\":[\"${FRONTEND_ORIGIN}\"],\"AllowedMethods\":[\"POST\"],\"AllowedHeaders\":[\"*\"],\"MaxAgeSeconds\":3000}]}"
+fi
 # 테이블 스크립트는 이미 있으면 그대로 둔다. 이미지 안 HOME이 /tmp라 자격 증명을 /tmp/.aws로 마운트한다.
 # shellcheck disable=SC2046
 docker run --rm --entrypoint python -e AWS_REGION="$REGION" $(aws_docker_args /tmp/.aws) \

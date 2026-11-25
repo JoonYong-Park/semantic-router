@@ -95,12 +95,21 @@ API Gateway REST의 응답 스트리밍(통합 `responseTransferMode=STREAM`, �
 - 이벤트가 없는 동안 15초마다 `: ping` 주석을 보내 CloudFront·API Gateway가 조용한 연결을 끊지 않게 한다.
 - 배포: `backend/scripts/deploy_stream_lambda.sh` (Zappa 배포 다음 단계, CI에 포함).
 
+## 4-2. 파일 업로드 (S3 직접 업로드)
+
+Lambda 요청 본문은 6MB가 상한이라, 첨부·참고자료 파일은 서버를 거치지 않고 브라우저가 S3에 바로 올린다.
+
+1. `POST .../upload-url {filename, size}` → 서버가 형식·크기·프로젝트 용량을 검사하고 presigned POST(`url`, `fields`, `upload_id`)를 준다. 키와 크기 상한(25MB)이 서명에 들어 있어 다른 위치나 더 큰 파일은 S3가 거절한다.
+2. 브라우저가 S3에 바로 올린다(XHR, 진행률 표시). 버킷 CORS는 서비스 도메인의 POST만 허용한다(`deploy_lambda.sh`).
+3. `POST .../complete {upload_id, filename}` → 서버가 S3에 올라간 실제 크기를 확인하고 첨부/참고자료를 등록한 뒤 추출을 시작한다.
+
+버킷이 없는 로컬에서는 1)이 `{"mode": "multipart"}`를 돌려주고 프론트는 예전처럼 본문을 서버로 보낸다.
+
 ## 5. 아직 남은 한계
 
 | 한계 | 이유 | 다음 단계 |
 |---|---|---|
 | 일반 API(채팅 외)는 29초 제한 | API Gateway 기본 통합 제한 | 오래 걸리는 작업은 SQS + Worker Lambda |
-| 업로드 약 6MB 상한 | Lambda 요청 크기 제한 | S3 presigned URL로 브라우저가 S3에 직접 업로드 |
 | auto 라우팅 꺼짐 | 모델 로딩 시간 | 모델을 이미지에 넣고 프로비저닝 동시성, 또는 임베딩 API로 교체 후 재평가 |
 
 ## 6. 한 문단 요약
