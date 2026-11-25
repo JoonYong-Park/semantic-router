@@ -6,7 +6,7 @@ Description: >
   배포 (저장소 루트에서):
     aws cloudformation deploy --profile joomini --region us-east-1 \
       --stack-name joomini-certificate --template-file infra/certificate.yaml \
-      --parameter-overrides DomainName=joomini.dev HostedZoneId=<Route 53 호스팅 영역 ID>
+      --parameter-overrides DomainName=<도메인> HostedZoneId=<Route 53 호스팅 영역 ID>
   출력 CertificateArn을 infra/cloudfront.yaml의 CertificateArn 파라미터로 넘긴다.
 
 Parameters:

@@ -1,7 +1,7 @@
 # backend
 
 Joomini 백엔드 (Flask + DynamoDB). Lambda + Zappa 배포를 목표로 FastAPI + Postgres에서 옮겼다.
-URL과 응답 형태는 FastAPI 시절과 같아서 프론트는 그대로다. 로컬과 온프레미스 서버에서는
+URL과 응답 형태는 FastAPI 시절과 같아서 프론트는 그대로다. 로컬에서는
 DynamoDB Local로 돈다. 이전 FastAPI 코드는 git 기록(`main` 브랜치)에 있다.
 
 ```
@@ -42,7 +42,7 @@ docker compose -f docker-compose.dev.yml exec backend python scripts/smoke_test.
 - auto 라우팅 모델(3GB+)은 Docker 볼륨 `semantic-router_backend_hf_cache`에 받아 둔다. 처음 뜰 때 로드에
   2~3분 걸리고, 그동안 `/health`의 `*_ready`가 false이며 수동 모델 선택은 바로 된다.
 - 업로드 파일은 저장소 루트 `uploads/`에 쌓인다 (git 제외).
-- 서버(온프레미스) 배포는 `docker-compose.yml` + `scripts/deploy.sh`로, 같은 이미지를 gunicorn으로 띄운다.
+- 배포는 main에 push하면 GitHub Actions가 Zappa로 API Gateway + Lambda에 올린다(`backend/scripts/deploy_lambda.sh`).
 
 ## AWS 배포
 

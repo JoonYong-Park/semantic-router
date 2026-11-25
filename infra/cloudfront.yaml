@@ -13,10 +13,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 #   aws cloudformation deploy --profile joomini --region ap-northeast-2 \
 #     --stack-name joomini-cloudfront --template-file infra/cloudfront.yaml \
 #     --parameter-overrides FrontendUrlDomain=<lambda-url 호스트> ApiId=<API Gateway ID> \
-#       DomainName=joomini.dev HostedZoneId=<Route 53 호스팅 영역 ID> CertificateArn=<certificate.yaml 출력>
+#       DomainName=<도메인> HostedZoneId=<Route 53 호스팅 영역 ID> CertificateArn=<certificate.yaml 출력>
 #
-# 내 도메인(DomainName)을 주면: joomini.dev, www.joomini.dev를 이 배포에 붙이고 Route 53 Alias 레코드를 만든다.
-# www나 *.cloudfront.net 주소로 들어오면 https://joomini.dev 로 301 이동시킨다(로그인 쿠키·콜백이 한 도메인 기준이라).
+# 내 도메인(DomainName)을 주면: <도메인>, www.<도메인>을 이 배포에 붙이고 Route 53 Alias 레코드를 만든다.
+# www나 *.cloudfront.net 주소로 들어오면 https://<도메인> 으로 301 이동시킨다(로그인 쿠키·콜백이 한 도메인 기준이라).
 # 비우면 CloudFront 기본 주소만 쓴다.
 #
 
@@ -38,7 +38,7 @@ Parameters:
   DomainName:
     Type: String
     Default: ""
-    Description: 서비스 도메인 (예 joomini.dev). 비우면 CloudFront 기본 주소만 쓴다
+    Description: 서비스 도메인 (예 example.com). 비우면 CloudFront 기본 주소만 쓴다
   HostedZoneId:
     Type: String
     Default: ""

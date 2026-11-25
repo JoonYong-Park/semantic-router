@@ -25,7 +25,7 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 CMD ["node", "server.js"]
 
-# 기본 (로컬, 온프레미스)
+# 기본 (로컬)
 FROM node:20-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production

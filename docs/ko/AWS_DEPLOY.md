@@ -1,10 +1,9 @@
 # AWS 서버리스 배포 (Lambda + API Gateway + DynamoDB + Zappa)
 
-2026-11-15에 처음 배포했다. 이 문서는 "어떻게 배포했는지"를 면접에서 설명할 수 있는 수준으로 정리한 것이다.
+2026-11-15에 처음 배포했다. 이 문서는 "어떻게 배포했는지"를 정리한 것이다.
 
-- 화면: https://alfx3kmfqqltjokbowculfwwwq0mlqxa.lambda-url.ap-northeast-2.on.aws/
-- API: https://lpowuegiud.execute-api.ap-northeast-2.amazonaws.com/dev
 - 리전: 서울(ap-northeast-2)
+- 사용자는 CloudFront 한 도메인으로 들어온다(`infra/cloudfront.yaml`). 지금은 main에 push하면 GitHub Actions가 배포한다(`.github/workflows/deploy-lambda.yml`).
 
 ---
 
@@ -35,7 +34,7 @@
 
 ```bash
 bash backend/scripts/deploy_lambda.sh update        # 백엔드 (처음엔 인자 없이 = zappa deploy)
-API_URL=https://lpowuegiud.execute-api.ap-northeast-2.amazonaws.com/dev bash scripts/deploy_frontend_lambda.sh
+bash scripts/deploy_frontend_lambda.sh                 # 프론트 (API는 같은 도메인의 /api)
 ```
 
 백엔드 스크립트가 하는 일:
@@ -50,7 +49,7 @@ API_URL=https://lpowuegiud.execute-api.ap-northeast-2.amazonaws.com/dev bash scr
 
 **컨테이너 이미지로 배포**
 - 일반 Lambda zip은 250MB가 상한인데, 이 앱은 LibreOffice(문서 미리보기, PDF 변환)와 torch(라우터 모델)가 들어가서 수 GB다. 컨테이너 이미지는 10GB까지 된다.
-- 로컬 개발, 온프레미스, Lambda가 **같은 Dockerfile**을 쓰고 마지막 단계만 다르다. 환경 차이로 인한 버그가 줄어든다.
+- 로컬 개발과 Lambda가 **같은 Dockerfile**을 쓰고 마지막 단계만 다르다. 환경 차이로 인한 버그가 줄어든다.
 
 **파일은 S3, `/tmp`는 캐시**
 - Lambda 디스크(`/tmp`)는 실행 환경마다 따로이고 사라질 수 있다. 그래서 정본은 S3에 두고, 추출기나 LibreOffice처럼 로컬 파일이 필요한 코드만 `/tmp`에 내려받아 쓴다.
@@ -80,7 +79,7 @@ API_URL=https://lpowuegiud.execute-api.ap-northeast-2.amazonaws.com/dev bash scr
 | 따뜻한 상태의 `/health` | 약 0.3 ~ 0.7초 (서울에서 호출) |
 | 백엔드 메모리 / 제한 시간 | 3,008MB / 120초 |
 
-## 5. 아직 남은 한계 (면접에서 물어보면 솔직하게)
+## 5. 아직 남은 한계
 
 | 한계 | 이유 | 다음 단계 |
 |---|---|---|
@@ -88,9 +87,7 @@ API_URL=https://lpowuegiud.execute-api.ap-northeast-2.amazonaws.com/dev bash scr
 | 긴 작업(파일 생성 등)이 29초를 넘으면 화면에 오류 | API Gateway 통합 제한 29초. Lambda는 끝까지 실행해 답은 저장된다 | 위와 같음 (비동기 처리) |
 | 업로드 약 6MB 상한 | Lambda 요청 크기 제한 | S3 presigned URL로 브라우저가 S3에 직접 업로드 |
 | auto 라우팅 꺼짐 | 모델 로딩 시간 | 모델을 이미지에 넣고 프로비저닝 동시성, 또는 임베딩 API로 교체 후 재평가 |
-| 로그인 없음 (모두 같은 데모 사용자) | Cognito 미연동 | Cognito + `auth.current_user_id()` 교체 |
-| 하루 2회 메모리 자동 추출 미연결 | | Zappa `events`에 `memory.extract.run_scheduled` 등록 |
 
-## 6. 면접용 한 문단 요약
+## 6. 한 문단 요약
 
 > API Gateway, Lambda, DynamoDB로 서버리스 구조를 구성했습니다. 앱에 LibreOffice와 ML 모델이 있어 zip 용량을 넘기 때문에 Zappa의 컨테이너 이미지 배포를 썼고, 로컬과 같은 Dockerfile에서 단계만 나눠 환경 차이를 줄였습니다. Lambda의 디스크가 임시 공간이라 파일은 S3를 정본으로 두고, 응답 뒤 실행이 멈추는 특성에 맞춰 백그라운드 작업을 요청 안으로 옮겼습니다. 콜드 스타트는 라우터 모델을 끈 상태에서 0.8~2.6초로 측정했고, 실시간 스트리밍과 29초 제한은 비동기 처리로 풀 다음 과제로 남겨 두었습니다.

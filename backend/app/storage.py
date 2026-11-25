@@ -1,6 +1,6 @@
 """업로드 파일 저장소. 키(예: "chats/{cid}/{aid}.docx")로 파일을 다룬다.
 
-- 로컬/온프레미스: UPLOAD_DIR 디스크에 바로 저장한다 (STORAGE_BUCKET 없음).
+- 로컬: UPLOAD_DIR 디스크에 바로 저장한다 (STORAGE_BUCKET 없음).
 - Lambda: STORAGE_BUCKET(S3)이 원본이고, UPLOAD_DIR(/tmp)은 그 캐시다.
   Lambda 디스크는 실행 환경마다 따로이고 사라질 수 있어서, 파일의 정본은 항상 S3에 둔다.
 

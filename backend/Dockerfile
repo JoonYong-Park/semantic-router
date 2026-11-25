@@ -1,6 +1,6 @@
 # Joomini 백엔드 (Flask + DynamoDB). Lambda 런타임과 같은 Python 3.12.
 # 단계(target)
-#   server (기본): gunicorn으로 띄운다. 로컬 개발(docker-compose.dev.yml)과 온프레미스(docker-compose.yml).
+#   server (기본): gunicorn으로 띄운다. 로컬 개발(docker-compose.dev.yml).
 #   lambda       : 같은 앱을 AWS Lambda 컨테이너 이미지로. Zappa 핸들러로 요청을 받는다.
 #                  docker build --target lambda -t joomini-lambda backend
 FROM python:3.12-slim AS base
