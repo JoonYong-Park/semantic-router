@@ -105,6 +105,15 @@ Lambda 요청 본문은 6MB가 상한이라, 첨부·참고자료 파일은 서�
 
 버킷이 없는 로컬에서는 1)이 `{"mode": "multipart"}`를 돌려주고 프론트는 예전처럼 본문을 서버로 보낸다.
 
+## 4-3. CloudFront를 거친 요청만 받기
+
+API Gateway의 `execute-api` 주소는 공개라서, CloudFront(보안 헤더, 도메인)를 건너뛰고 직접 호출할 수 있었다.
+
+- `infra/origin-secret.yaml`: Secrets Manager가 비밀값(`joomini/origin-verify`)을 만든다. 사람은 값을 보지 않는다.
+- `infra/cloudfront.yaml` (`OriginVerify=true`): API 오리진 요청에 `X-Origin-Verify` 헤더로 붙인다(CloudFormation 동적 참조).
+- 백엔드 `auth.check_origin` (모든 요청, 인증보다 먼저): 헤더가 없거나 다르면 403. 비밀값은 5분 캐시라 교체하면 5분 안에 반영된다. 비밀값을 못 읽으면 503(fail closed).
+- `ORIGIN_VERIFY_SECRET_ID`가 없는 로컬에서는 검사하지 않는다.
+
 ## 5. 아직 남은 한계
 
 | 한계 | 이유 | 다음 단계 |

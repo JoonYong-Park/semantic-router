@@ -20,6 +20,8 @@ SECRET_KEYS = [
     "COGNITO_CLIENT_SECRET",
 ]
 # 로그인(Cognito) 설정 중 비밀이 아닌 값. 환경 변수로 바꿀 수 있다.
+ORIGIN_SECRET_ID = "joomini/origin-verify"  # infra/origin-secret.yaml
+
 COGNITO_DEFAULTS = {
     "COGNITO_REGION": "ap-northeast-2",
     "COGNITO_USER_POOL_ID": "ap-northeast-2_eQhPcU4Lt",
@@ -95,6 +97,8 @@ def main() -> None:
                 "COOKIE_SECURE": "1",
                 # CloudFront가 /api/* 를 이 앱으로 넘긴다(infra/cloudfront.yaml). 쿠키 Path를 맞춘다.
                 "API_PATH_PREFIX": "/api",
+                # CloudFront가 붙이는 X-Origin-Verify 헤더를 확인한다(infra/origin-secret.yaml).
+                "ORIGIN_VERIFY_SECRET_ID": ORIGIN_SECRET_ID,
             },
             "aws_environment_variables": secrets,
             "extra_permissions": [
@@ -104,6 +108,7 @@ def main() -> None:
                         "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
                         "dynamodb:Query", "dynamodb:BatchWriteItem", "dynamodb:ConditionCheckItem",
                         "dynamodb:DescribeTable",
+                        "dynamodb:Scan",  # 정기 메모리 추출의 사용자 목록 (users.list_user_ids)
                     ],
                     "Resource": [
                         f"arn:aws:dynamodb:{REGION}:{args.account}:table/{TABLE}",
@@ -114,6 +119,11 @@ def main() -> None:
                     "Effect": "Allow",
                     "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
                     "Resource": [f"arn:aws:s3:::{files_bucket}", f"arn:aws:s3:::{files_bucket}/*"],
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": ["secretsmanager:GetSecretValue"],
+                    "Resource": [f"arn:aws:secretsmanager:{REGION}:{args.account}:secret:{ORIGIN_SECRET_ID}-*"],
                 },
             ],
         }
