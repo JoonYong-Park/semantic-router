@@ -3,16 +3,22 @@
 // 로그인 여부에 따라 앱(AppShell) 또는 로그인 화면을 보여준다.
 // 시작할 때 /auth/reissue로 access 토큰을 받아 본다 - refresh 쿠키가 살아 있으면 바로 로그인 상태.
 // 이후 재발급이 실패하면(refresh 만료/폐기) onAuthChange로 알림을 받아 로그인 화면으로 돌아간다.
+// PUBLIC_PATHS(개인정보처리방침 등)는 로그인 없이, 앱 화면(AppShell) 밖에서 page만 보여준다.
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { onAuthChange, refreshAccessToken, startLogin } from "@/lib/auth";
 
+const PUBLIC_PATHS = ["/privacy"];
+
 type Status = "checking" | "in" | "out";
 
-export default function AuthGate({ children }: { children: React.ReactNode }) {
+export default function AuthGate({ children, page }: { children: React.ReactNode; page: React.ReactNode }) {
+  const isPublic = PUBLIC_PATHS.includes(usePathname());
   const [status, setStatus] = useState<Status>("checking");
   const [loginError, setLoginError] = useState(false);
 
   useEffect(() => {
+    if (isPublic) return;
     const params = new URLSearchParams(window.location.search);
     if (params.has("login_error")) {
       setLoginError(true);
@@ -23,8 +29,11 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     return () => {
       off();
     };
-  }, []);
+  }, [isPublic]);
 
+  if (isPublic) {
+    return <>{page}</>;
+  }
   if (status === "checking") {
     return <div className="h-screen w-full bg-white dark:bg-gray-950" />;
   }
@@ -57,6 +66,10 @@ function LoginScreen({ error }: { error: boolean }) {
           <GoogleIcon />
           Google 계정으로 계속하기
         </button>
+
+        <a href="/privacy" className="mt-6 inline-block text-xs text-gray-400 hover:underline dark:text-gray-500">
+          개인정보처리방침
+        </a>
       </div>
     </main>
   );

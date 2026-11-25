@@ -26,7 +26,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className="bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
-        <AuthGate>
+        <AuthGate page={children}>
           <AppShell>{children}</AppShell>
         </AuthGate>
       </body>
