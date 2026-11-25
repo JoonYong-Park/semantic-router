@@ -43,9 +43,29 @@ def start_model_loading() -> None:
     threading.Thread(target=_load_models, daemon=True).start()
 
 
+STREAM_PREFIX = "/stream"
+
+
+def _strip_stream_prefix(wsgi_app):
+    """/stream/conversations/... 를 /conversations/... 로 받는다.
+
+    배포에서는 API Gateway가 /stream/* 만 응답 스트리밍 Lambda(joomini-stream)로 보내고 나머지는
+    Zappa Lambda로 보낸다. 앱은 어느 쪽에서 돌든 같은 라우트를 쓰도록 접두사를 떼 준다
+    (로컬에서는 같은 서버가 둘 다 받는다)."""
+
+    def middleware(environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        if path == STREAM_PREFIX or path.startswith(STREAM_PREFIX + "/"):
+            environ["PATH_INFO"] = path[len(STREAM_PREFIX):] or "/"
+        return wsgi_app(environ, start_response)
+
+    return middleware
+
+
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     app = Flask(__name__)
+    app.wsgi_app = _strip_stream_prefix(app.wsgi_app)
     app.json.ensure_ascii = False  # 한글을 \uXXXX가 아니라 그대로 내보낸다
     app.json.sort_keys = False
 

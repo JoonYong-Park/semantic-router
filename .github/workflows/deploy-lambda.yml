@@ -72,6 +72,11 @@ jobs:
           COGNITO_CLIENT_SECRET: ${{ secrets.COGNITO_CLIENT_SECRET }}
         run: bash backend/scripts/deploy_lambda.sh update
 
+      # 답변 스트리밍(SSE) 전용 Lambda. 같은 백엔드 코드, Lambda Web Adapter로 응답을 흘려보낸다.
+      # 환경 변수는 방금 배포한 Zappa Lambda와 zappa_settings.json에서 가져온다.
+      - name: Deploy streaming Lambda
+        run: bash backend/scripts/deploy_stream_lambda.sh
+
       # 프론트는 API를 같은 도메인의 /api(상대 경로)로 부른다. CloudFront가 /api/*를 API Gateway로 넘긴다.
       - name: Deploy frontend
         run: bash scripts/deploy_frontend_lambda.sh
@@ -83,9 +88,10 @@ jobs:
         run: |
           for i in 1 2 3 4 5; do
             api="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/api/health" || true)"
+            stream="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/api/stream/health" || true)"
             web="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/" || true)"
-            echo "api: $api, web: $web"
-            [ "$api" = "200" ] && [ "$web" = "200" ] && exit 0
+            echo "api: $api, stream: $stream, web: $web"
+            [ "$api" = "200" ] && [ "$stream" = "200" ] && [ "$web" = "200" ] && exit 0
             sleep 10
           done
           exit 1

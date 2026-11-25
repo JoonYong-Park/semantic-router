@@ -79,12 +79,27 @@ bash scripts/deploy_frontend_lambda.sh                 # 프론트 (API는 같�
 | 따뜻한 상태의 `/health` | 약 0.3 ~ 0.7초 (서울에서 호출) |
 | 백엔드 메모리 / 제한 시간 | 3,008MB / 120초 |
 
+## 4-1. 답변 스트리밍
+
+Zappa 핸들러는 Flask 응답을 끝까지 모아 한 번에 돌려줘서 SSE가 흐르지 않는다. 그래서 같은 백엔드 이미지를
+Lambda Web Adapter + gunicorn으로 띄운 **스트리밍 전용 Lambda(`joomini-stream`)**를 하나 더 두고,
+API Gateway REST의 응답 스트리밍(통합 `responseTransferMode=STREAM`, 최대 15분)으로 `/stream/*` 만 그쪽으로 보낸다.
+
+| 경로 | 받는 Lambda |
+|---|---|
+| `/stream/conversations/{id}/messages`, `/stream/conversations/{id}/stream` | `joomini-stream` (응답 스트리밍) |
+| 그 밖의 API | `joomini-dev` (Zappa) |
+
+- 앱은 어느 쪽에서 돌든 같은 라우트를 쓴다. WSGI 미들웨어가 `/stream` 접두사를 뗀다.
+- 스트리밍 Lambda에서는 답변 생성을 스레드로 돌리고, 브라우저가 중간에 떠나도 생성이 끝나 저장될 때까지 응답(=호출)을 붙잡아 둔다.
+- 이벤트가 없는 동안 15초마다 `: ping` 주석을 보내 CloudFront·API Gateway가 조용한 연결을 끊지 않게 한다.
+- 배포: `backend/scripts/deploy_stream_lambda.sh` (Zappa 배포 다음 단계, CI에 포함).
+
 ## 5. 아직 남은 한계
 
 | 한계 | 이유 | 다음 단계 |
 |---|---|---|
-| 답변이 실시간으로 흐르지 않고 한 번에 보임 | API Gateway(REST)가 응답을 모아서 보낸다 | 비동기 작업 + 폴링, 또는 Lambda 응답 스트리밍 |
-| 긴 작업(파일 생성 등)이 29초를 넘으면 화면에 오류 | API Gateway 통합 제한 29초. Lambda는 끝까지 실행해 답은 저장된다 | 위와 같음 (비동기 처리) |
+| 일반 API(채팅 외)는 29초 제한 | API Gateway 기본 통합 제한 | 오래 걸리는 작업은 SQS + Worker Lambda |
 | 업로드 약 6MB 상한 | Lambda 요청 크기 제한 | S3 presigned URL로 브라우저가 S3에 직접 업로드 |
 | auto 라우팅 꺼짐 | 모델 로딩 시간 | 모델을 이미지에 넣고 프로비저닝 동시성, 또는 임베딩 API로 교체 후 재평가 |
 
