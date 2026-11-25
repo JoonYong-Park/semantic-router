@@ -71,6 +71,9 @@ def start_turn(uid, cid, body: dict) -> TurnStream:
         raise ApiError(503, "분류 모델이 아직 준비되지 않았습니다.")
 
     is_first_message = int(conv.get("message_count", 0)) == 0
+    # 제목이 아직 없으면 이번 턴이 성공했을 때 만든다. "첫 메시지일 때만"이면 첫 질문이 실패한
+    # 대화방은 이후 답변이 성공해도 영영 "새 채팅"으로 남았다.
+    needs_title = not (conv.get("title") or "").strip()
     settings = user_repo.get_settings(uid)
     memory_facts = [memory_topic_to_text(m) for m in memory_repo.list_user_memory(uid)]
     project_id = conv.get("project_id")
@@ -102,6 +105,7 @@ def start_turn(uid, cid, body: dict) -> TurnStream:
         "project_instruction": project_instruction,
         "project_memory_facts": project_memory_facts,
         "is_first_message": is_first_message,
+        "needs_title": needs_title,
     }
     turn = TurnStream()
     with active_turns_lock:
@@ -123,9 +127,20 @@ def _drive(turn: TurnStream, ctx: dict) -> None:
         with active_turns_lock:
             if active_turns.get(cid) is turn:
                 del active_turns[cid]
-    # 기존과 같이 답변이 저장된 첫 턴에만 제목을 만든다 (모델 호출 실패 시에는 만들지 않음).
-    if completed and ctx["is_first_message"]:
-        generate_and_save_title(ctx["uid"], cid, ctx["content"])
+    try:
+        # 답변이 저장된 턴에서, 아직 제목이 없으면 만든다 (모델 호출 실패 시에는 만들지 않음).
+        if completed and ctx["needs_title"]:
+            title_source = ctx["content"]
+            if not ctx["is_first_message"]:
+                # 첫 질문이 실패해 제목이 비어 있던 대화방 - 지금 질문("내일은?")보다 첫 질문이 대화를 잘 나타낸다
+                first = next((m for m in conv_repo.get_conversation_page(cid)
+                              if m.get("role") == "user" and (m.get("content") or "").strip()), None)
+                title_source = first["content"] if first else title_source
+            generate_and_save_title(ctx["uid"], cid, title_source)
+    finally:
+        # 응답 스트리밍 Lambda는 이 신호까지 응답(=호출)을 붙잡아 둔다. done 이벤트 직후 호출이
+        # 끝나면 실행 환경이 멈춰 위의 제목 생성이 중간에 끊겼다.
+        turn.settle()
 
 
 async def _run_turn(turn: TurnStream, ctx: dict) -> bool:

@@ -27,3 +27,40 @@ def generate_and_save_title(uid, cid, first_message: str) -> None:
         return
     if conv_repo.get_conversation(uid, cid) is not None:
         conv_repo.update_conversation(uid, cid, title=title)
+
+
+def backfill_missing_titles(event=None, context=None) -> dict:
+    """제목이 없는 대화방(답변이 하나라도 있는 것)에 제목을 붙인다. 한 번 쓰는 관리 작업.
+
+    배포 Lambda에서: aws lambda invoke --function-name joomini-dev \\
+      --payload '{"command": "app.chat.title.backfill_missing_titles"}' out.json
+    (Zappa 핸들러가 command의 함수를 실행한다.)
+    """
+    from boto3.dynamodb.conditions import Attr
+
+    from app.db import dynamo, keys
+
+    kwargs = {
+        "FilterExpression": Attr("SK").begins_with(keys.CONV_PREFIX) & Attr("PK").begins_with("USER#")
+        & (Attr("title").not_exists() | Attr("title").eq("")),
+        "ProjectionExpression": "PK, id",
+    }
+    targets = []
+    while True:
+        resp = dynamo.table().scan(**kwargs)
+        targets += resp.get("Items", [])
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    done = 0
+    for item in targets:
+        uid, cid = item["PK"].split("#", 1)[1], item["id"]
+        messages = conv_repo.get_conversation_page(cid)
+        first_user = next((m for m in messages if m.get("role") == "user" and (m.get("content") or "").strip()), None)
+        has_answer = any(m.get("role") == "assistant" for m in messages)
+        if first_user and has_answer:
+            generate_and_save_title(uid, cid, first_user["content"])
+            done += 1
+    logger.info("제목 채우기: 대상 %d개 중 %d개", len(targets), done)
+    return {"candidates": len(targets), "titled": done}

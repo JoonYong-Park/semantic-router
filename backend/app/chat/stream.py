@@ -27,6 +27,8 @@ class TurnStream:
         self.events: list[dict] = []
         self.done = False
         self._cond = threading.Condition()
+        # done 이후의 뒷정리(제목 생성)까지 끝났는지. 스트리밍 Lambda가 이때까지 호출을 유지한다.
+        self._settled = threading.Event()
 
     def emit(self, event: dict) -> None:
         with self._cond:
@@ -41,6 +43,12 @@ class TurnStream:
     def wait_done(self, timeout: float) -> bool:
         with self._cond:
             return self._cond.wait_for(lambda: self.done, timeout=timeout)
+
+    def settle(self) -> None:
+        self._settled.set()
+
+    def wait_settled(self, timeout: float) -> bool:
+        return self._settled.wait(timeout)
 
     def subscribe(self):
         sent = 0
