@@ -138,7 +138,7 @@ const MESSAGES: Record<string, DBMessage[]> = {
     msg(
       "m2",
       "assistant",
-      "효과가 큰 순서로 정리하면:\n\n- **이미지 줄이기:** 쓰지 않는 패키지(예: 큰 ML 라이브러리)를 빼면 다운로드와 초기화가 빨라져요.\n- **무거운 import 미루기:** 모델 로딩처럼 오래 걸리는 작업은 필요할 때 처음 한 번만 해요.\n- **미리 깨워 두기:** EventBridge로 몇 분마다 호출하거나, 비용을 내고 Provisioned Concurrency를 써요.\n- **메모리 늘리기:** Lambda는 메모리에 비례해 CPU도 늘어서 초기화가 빨라져요.",
+      "효과가 큰 순서로 정리하면:\n\n- **이미지 줄이기:** 쓰지 않는 패키지(예: 큰 ML 라이브러리)를 빼면 다운로드와 초기화가 빨라져요.\n- **무거운 import 미루기:** 모델 로딩처럼 오래 걸리는 작업은 필요할 때 처음 한 번만 해요.\n- **미리 깨워 두기:** EventBridge로 몇 분마다 호출하거나, 비용을 내고 Provisioned Concurrency를 써요.\n- **메모리 늘리기:** Lambda는 메모리에 비례해 CPU도 늘어서 초기화가 빨라져요.\n\n---\n출처:\n- [1] Lambda 실행 환경 수명 주기 (https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html)\n- [2] 프로비저닝된 동시성 구성 (https://docs.aws.amazon.com/lambda/latest/dg/provisioned-concurrency.html)",
       26,
       ["Claude Sonnet 5.5", "engineering", 0.52],
     ),

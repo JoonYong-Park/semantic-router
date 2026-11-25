@@ -98,7 +98,7 @@ async def _execute_get_weather(arguments: dict, ctx: ToolContext) -> ToolResult:
             f"최저 {daily['temperature_2m_min'][i]}°C, 강수확률 최대 {daily['precipitation_probability_max'][i]}%"
         )
     lines.append(
-        "위 값으로 답해. 출처는 URL 목록 대신 '날씨 정보: Open-Meteo 예보' 한 줄만 적어. "
+        "위 값으로 답해. 날씨 출처(Open-Meteo 등)나 출처 목록은 적지 마. "
         "기상청 공식 특보나 예보가 필요한 질문이면 기상청 확인을 함께 권해."
     )
     return ToolResult(content="\n".join(lines))
