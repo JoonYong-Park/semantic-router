@@ -46,9 +46,15 @@ Parameters:
     Type: String
     Default: ""
     Description: us-east-1 ACM 인증서 ARN (infra/certificate.yaml)
+  OriginVerify:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: true면 API 요청에 X-Origin-Verify 헤더(infra/origin-secret.yaml의 비밀값)를 붙인다
 
 Conditions:
   HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasOriginVerify: !Equals [!Ref OriginVerify, "true"]
 
 Resources:
   FrontendOAC:
@@ -134,6 +140,12 @@ Resources:
           - Id: api
             DomainName: !Sub ${ApiId}.execute-api.${AWS::Region}.amazonaws.com
             OriginPath: !Sub /${ApiStage}
+            # 백엔드는 이 헤더가 맞을 때만 요청을 받는다 (execute-api 주소로 직접 오는 요청 차단)
+            OriginCustomHeaders: !If
+              - HasOriginVerify
+              - - HeaderName: X-Origin-Verify
+                  HeaderValue: "{{resolve:secretsmanager:joomini/origin-verify:SecretString}}"
+              - !Ref AWS::NoValue
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]

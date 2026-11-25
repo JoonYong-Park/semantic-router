@@ -89,7 +89,9 @@ def create_app() -> Flask:
     for module in (auth_routes, conversations, attachments, projects, settings, users, usage, misc):
         app.register_blueprint(module.bp)
 
-    # 모든 API 요청은 Cognito access 토큰을 검증한다 (/health, /auth/*, OPTIONS 제외).
+    # 배포에서는 CloudFront를 거친 요청만 받고(X-Origin-Verify), 그다음 Cognito access 토큰을 검증한다
+    # (/health, /auth/*, OPTIONS 제외).
+    app.before_request(auth.check_origin)
     app.before_request(auth.authenticate)
 
     @app.before_request

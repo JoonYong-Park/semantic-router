@@ -11,8 +11,10 @@
 백그라운드 스레드에는 요청 컨텍스트가 없으니 current_user_id()를 부르지 말고 uid를 넘긴다.
 """
 
+import hmac
 import logging
 import os
+import time
 
 import jwt
 from flask import g, request
@@ -67,6 +69,39 @@ def verify_token(token: str, token_use: str) -> dict:
     if claims.get("token_use") != token_use:
         raise jwt.InvalidTokenError("토큰 종류가 다릅니다")
     return claims
+
+
+# CloudFront를 거친 요청만 받는다. CloudFront가 API 요청에 X-Origin-Verify 헤더(Secrets Manager의
+# joomini/origin-verify 값)를 붙이고, 여기서 그 값을 확인한다. execute-api 주소로 직접 오면 헤더가 없어 403.
+# ORIGIN_VERIFY_SECRET_ID가 없으면(로컬) 검사하지 않는다.
+ORIGIN_VERIFY_SECRET_ID = os.environ.get("ORIGIN_VERIFY_SECRET_ID", "")
+_ORIGIN_SECRET_TTL = 300  # 값을 바꾸면(교체) 최대 5분 뒤 반영
+_origin_secret: dict = {"value": None, "at": 0.0}
+
+
+def _origin_secret_value() -> str | None:
+    now = time.monotonic()
+    if _origin_secret["value"] is None or now - _origin_secret["at"] > _ORIGIN_SECRET_TTL:
+        import boto3
+
+        resp = boto3.client("secretsmanager").get_secret_value(SecretId=ORIGIN_VERIFY_SECRET_ID)
+        _origin_secret.update(value=resp["SecretString"], at=now)
+    return _origin_secret["value"]
+
+
+def check_origin() -> None:
+    """before_request 훅 (authenticate보다 먼저). 공개 경로(/health 등)도 포함해 모두 검사한다."""
+    if not ORIGIN_VERIFY_SECRET_ID:
+        return None
+    sent = request.headers.get("X-Origin-Verify", "")
+    try:
+        expected = _origin_secret_value()
+    except Exception as e:  # noqa: BLE001 - 비밀값을 못 읽으면 막는다 (fail closed)
+        logger.error("origin 비밀값을 읽지 못했습니다: %s", type(e).__name__)
+        raise ApiError(503, "잠시 후 다시 시도해 주세요.")
+    if not sent or not hmac.compare_digest(sent, expected or ""):
+        raise ApiError(403, "허용되지 않은 경로입니다.")
+    return None
 
 
 def authenticate() -> None:
