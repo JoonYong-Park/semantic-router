@@ -5,12 +5,17 @@
 상관없이 끝까지 돌아 답을 저장하고, SSE 응답은 쌓인 이벤트를 처음부터 다시 받거나
 (재접속) 이어서 받기만 한다.
 
-Lambda로 갈 때는 프로세스 메모리에 둘 수 없으므로 이 부분을 "비동기 작업 + 폴링"으로
-바꾼다 (docs/ko/AWS_MIGRATION_LOG.md 남은 일 6번).
+Lambda에서는 응답 스트리밍 Lambda(joomini-stream)가 이 경로를 받는다. 같은 실행 환경에 다시
+붙어야 이어 받기가 되므로, 다른 실행 환경으로 간 재접속은 저장된 메시지를 다시 읽는 것으로 대신한다.
+
+연결 중에 이벤트가 한동안 없으면(웹 검색, 문서 생성 등) 15초마다 SSE 주석(": ping")을 보낸다.
+CloudFront와 API Gateway가 조용한 연결을 끊지 않게 하는 용도이고, 프론트는 data: 줄만 읽는다.
 """
 
 import json
 import threading
+
+PING_SECONDS = 15
 
 
 def sse(payload: dict) -> str:
@@ -33,15 +38,23 @@ class TurnStream:
             self.done = True
             self._cond.notify_all()
 
+    def wait_done(self, timeout: float) -> bool:
+        with self._cond:
+            return self._cond.wait_for(lambda: self.done, timeout=timeout)
+
     def subscribe(self):
         sent = 0
         while True:
             with self._cond:
-                while sent >= len(self.events) and not self.done:
-                    self._cond.wait()
+                if sent >= len(self.events) and not self.done:
+                    self._cond.wait(timeout=PING_SECONDS)
+                idle = sent >= len(self.events) and not self.done
                 batch = self.events[sent:]
                 sent = len(self.events)
                 finished = self.done
+            if idle:
+                yield ": ping\n\n"
+                continue
             for event in batch:
                 yield sse(event)
             if finished:

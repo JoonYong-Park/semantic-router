@@ -3,6 +3,7 @@
 #   server (기본): gunicorn으로 띄운다. 로컬 개발(docker-compose.dev.yml).
 #   lambda       : 같은 앱을 AWS Lambda 컨테이너 이미지로. Zappa 핸들러로 요청을 받는다.
 #                  docker build --target lambda -t joomini-lambda backend
+#   stream       : 답변 스트리밍 전용 Lambda. Lambda Web Adapter + gunicorn (응답 스트리밍)
 FROM python:3.12-slim AS base
 
 WORKDIR /app
@@ -37,6 +38,23 @@ COPY scripts ./scripts
 COPY zappa_settings.py ./zappa_settings.py
 ENTRYPOINT ["python", "-m", "awslambdaric"]
 CMD ["zappa.handler.lambda_handler"]
+
+
+# ---------------------------------------------------------------- stream
+# 답변 스트리밍(SSE) 전용 Lambda (joomini-stream). Zappa 핸들러는 응답을 모아 한 번에 돌려주므로,
+# Lambda Web Adapter가 gunicorn 앞에서 응답 조각을 그대로 흘려보낸다(invoke mode = response_stream).
+# API Gateway가 /stream/* 만 이 함수로 보낸다(backend/scripts/deploy_stream_lambda.sh).
+FROM base AS stream
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
+RUN pip install --no-cache-dir gunicorn==23.0.0
+ENV HOME=/tmp XDG_CACHE_HOME=/tmp/.cache HF_HOME=/tmp/hf-cache UPLOAD_DIR=/tmp/uploads PYTHONPATH=/app \
+    AWS_LWA_PORT=8000 AWS_LWA_INVOKE_MODE=response_stream AWS_LWA_READINESS_CHECK_PATH=/health \
+    RESPONSE_STREAMING=1
+COPY app ./app
+COPY scripts ./scripts
+# Lambda는 root가 아닌 사용자로 실행한다. 체크아웃 환경에 따라 소스가 600 권한일 수 있어 읽기 권한을 연다.
+RUN chmod -R a+rX /app
+CMD ["gunicorn", "--bind", "127.0.0.1:8000", "--workers", "1", "--worker-class", "gthread", "--threads", "8", "--timeout", "900", "app:app"]
 
 
 # ---------------------------------------------------------------- server (기본)

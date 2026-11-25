@@ -267,7 +267,8 @@ export function guestResponse(url: string, init: RequestInit = {}, apiUrl: strin
   }
   const full = new URL(url, window.location.origin);
   const base = new URL(apiUrl, window.location.origin).pathname.replace(/\/$/, "");
-  const path = full.pathname.startsWith(base) ? full.pathname.slice(base.length) || "/" : full.pathname;
+  let path = full.pathname.startsWith(base) ? full.pathname.slice(base.length) || "/" : full.pathname;
+  if (path.startsWith("/stream/")) path = path.slice("/stream".length); // 스트리밍 경로도 같은 더미 라우트로
   // 진행 중인 응답 이어 받기: 게스트에게는 없다.
   if (/^\/conversations\/[^/]+\/stream$/.test(path)) return new Response(null, { status: 204 });
   const body = route(path, full.searchParams);

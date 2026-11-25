@@ -90,6 +90,9 @@ def new_file_key(folder: str, ext: str) -> tuple[str, str]:
 
 
 ON_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+# 응답 스트리밍 Lambda(joomini-stream, Lambda Web Adapter): 응답을 흘려보내는 동안 호출이 살아 있으므로
+# 답변 생성을 스레드로 돌려도 멈추지 않는다. 대신 응답이 끝나기 전에 생성이 끝나도록 SSE 쪽에서 기다린다.
+RESPONSE_STREAMING = os.environ.get("RESPONSE_STREAMING") == "1"
 
 
 def run_in_background(fn, *args) -> None:
@@ -98,7 +101,7 @@ def run_in_background(fn, *args) -> None:
     Lambda는 응답을 보낸 뒤 실행 환경을 멈추기 때문에, 스레드로 넘기면 작업이 끝나지 않는다.
     그래서 Lambda에서는 요청 안에서 바로 실행한다(업로드 응답이 추출만큼 늦어짐).
     응답을 먼저 주는 방식으로 되돌리려면 Zappa @task(비동기 Lambda 호출)로 바꾼다."""
-    if ON_LAMBDA:
+    if ON_LAMBDA and not RESPONSE_STREAMING:
         fn(*args)
         return
     threading.Thread(target=fn, args=args, daemon=True).start()

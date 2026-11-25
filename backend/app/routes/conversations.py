@@ -23,8 +23,17 @@ def owned_conversation(cid) -> dict:
 
 
 def _sse_response(turn) -> Response:
+    def events():
+        try:
+            yield from turn.subscribe()
+        finally:
+            # 응답 스트리밍 Lambda: 브라우저가 중간에 떠나도 이 응답(=Lambda 호출)이 끝나면 실행 환경이
+            # 멈춰 생성 스레드도 멈춘다. 생성이 끝나 저장될 때까지 호출을 붙잡아 둔다(최대 14분).
+            if files.RESPONSE_STREAMING:
+                turn.wait_done(timeout=840)
+
     return Response(
-        stream_with_context(turn.subscribe()),
+        stream_with_context(events()),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
