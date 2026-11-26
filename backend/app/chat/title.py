@@ -14,7 +14,7 @@ TITLE_MODEL = get_model("openai", "small")
 
 
 def generate_and_save_title(uid, cid, first_message: str) -> None:
-    """응답 저장이 끝난 뒤 별도 스레드에서 실행한다 (services.files.run_in_background)."""
+    """답변 저장이 끝난 뒤 답변 생성 스레드(chat/turn.py _drive)에서 이어서 실행한다."""
     try:
         prompt = (
             "아래 질문을 10자 이내의 짧은 제목으로 만들어줘. "
@@ -32,9 +32,9 @@ def generate_and_save_title(uid, cid, first_message: str) -> None:
 def backfill_missing_titles(event=None, context=None) -> dict:
     """제목이 없는 대화방(답변이 하나라도 있는 것)에 제목을 붙인다. 한 번 쓰는 관리 작업.
 
-    배포 Lambda에서: aws lambda invoke --function-name joomini-dev \\
-      --payload '{"command": "app.chat.title.backfill_missing_titles"}' out.json
-    (Zappa 핸들러가 command의 함수를 실행한다.)
+    배포 Lambda에서: aws lambda invoke --function-name joomini-api \\
+      --cli-binary-format raw-in-base64-out --payload '{"command": "backfill_titles"}' out.json
+    (Lambda Web Adapter가 이벤트를 /events로 넘기고, routes/events.py가 명령을 실행한다.)
     """
     from boto3.dynamodb.conditions import Attr
 

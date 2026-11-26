@@ -1,0 +1,55 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Sid": "EcrLogin", "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*"},
+    {"Sid": "EcrPush", "Effect": "Allow",
+     "Action": ["ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload", "ecr:PutImage", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+                "ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:ListImages"],
+     "Resource": ["arn:aws:ecr:ap-northeast-2:ACCOUNT_ID:repository/joomini-backend",
+                  "arn:aws:ecr:ap-northeast-2:ACCOUNT_ID:repository/joomini-frontend"]},
+    {"Sid": "PublicEcrPull", "Effect": "Allow", "Action": ["ecr-public:GetAuthorizationToken", "sts:GetServiceBearerToken"], "Resource": "*"},
+
+    {"Sid": "Lambda", "Effect": "Allow", "Action": "lambda:*", "Resource": "arn:aws:lambda:ap-northeast-2:ACCOUNT_ID:function:joomini-*"},
+    {"Sid": "LambdaList", "Effect": "Allow", "Action": ["lambda:ListFunctions", "lambda:GetAccountSettings"], "Resource": "*"},
+
+    {"Sid": "BackendStack", "Effect": "Allow", "Action": "cloudformation:*",
+     "Resource": "arn:aws:cloudformation:ap-northeast-2:ACCOUNT_ID:stack/joomini-backend/*"},
+    {"Sid": "StackRead", "Effect": "Allow",
+     "Action": ["cloudformation:DescribeStacks", "cloudformation:ListStacks", "cloudformation:ValidateTemplate",
+                "cloudformation:GetTemplateSummary"],
+     "Resource": "*"},
+
+    {"Sid": "Roles", "Effect": "Allow",
+     "Action": ["iam:GetRole", "iam:CreateRole", "iam:DeleteRole", "iam:PassRole", "iam:TagRole", "iam:UntagRole",
+                "iam:GetRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:UpdateAssumeRolePolicy",
+                "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:ListAttachedRolePolicies", "iam:ListRolePolicies"],
+     "Resource": ["arn:aws:iam::ACCOUNT_ID:role/joomini-api-role",
+                  "arn:aws:iam::ACCOUNT_ID:role/joomini-api-scheduler-role",
+                  "arn:aws:iam::ACCOUNT_ID:role/joomini-frontend-lambda-role"]},
+
+    {"Sid": "ApiGateway", "Effect": "Allow",
+     "Action": ["apigateway:GET", "apigateway:POST", "apigateway:PUT", "apigateway:PATCH", "apigateway:DELETE"],
+     "Resource": "arn:aws:apigateway:ap-northeast-2::/*"},
+
+    {"Sid": "Schedules", "Effect": "Allow",
+     "Action": ["scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule", "scheduler:GetSchedule"],
+     "Resource": "arn:aws:scheduler:ap-northeast-2:ACCOUNT_ID:schedule/default/joomini-api-*"},
+
+    {"Sid": "Logs", "Effect": "Allow",
+     "Action": ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy",
+                "logs:TagResource", "logs:DescribeLogGroups"],
+     "Resource": "arn:aws:logs:ap-northeast-2:ACCOUNT_ID:log-group:/aws/lambda/joomini-api*"},
+
+    {"Sid": "AppSecret", "Effect": "Allow",
+     "Action": ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue", "secretsmanager:CreateSecret",
+                "secretsmanager:DescribeSecret"],
+     "Resource": "arn:aws:secretsmanager:ap-northeast-2:ACCOUNT_ID:secret:joomini/app-*"},
+
+    {"Sid": "FilesBucket", "Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketCORS", "s3:PutBucketCORS"],
+     "Resource": "arn:aws:s3:::joomini-files-ACCOUNT_ID"},
+    {"Sid": "Table", "Effect": "Allow",
+     "Action": ["dynamodb:DescribeTable", "dynamodb:CreateTable", "dynamodb:UpdateTimeToLive", "dynamodb:DescribeTimeToLive"],
+     "Resource": "arn:aws:dynamodb:ap-northeast-2:ACCOUNT_ID:table/joomini"}
+  ]
+}

@@ -142,7 +142,7 @@ def delete_project_file(uid, fid, item: dict | None = None) -> dict | None:
 # ------------------------------------------------------------------ 삭제 (AP19)
 def delete_project(uid, pid) -> dict | None:
     """프로젝트, 파일, 메모리, 소속 대화와 그 메시지까지 지운다.
-    아이템이 많을 수 있어서 Lambda에서는 Zappa @task(비동기)로 부른다.
+    아이템이 많을 수 있지만 요청 안에서 바로 실행한다(Lambda 제한 시간 15분 안).
     반환값의 conversation_ids로 S3 chats/{cid}/, projects/{pid}/ 정리를 한다."""
     if get_project(uid, pid) is None:
         return None

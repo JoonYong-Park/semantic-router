@@ -90,8 +90,13 @@ def _origin_secret_value() -> str | None:
 
 
 def check_origin() -> None:
-    """before_request 훅 (authenticate보다 먼저). 공개 경로(/health 등)도 포함해 모두 검사한다."""
+    """before_request 훅 (authenticate보다 먼저). 공개 경로(/health 등)도 포함해 모두 검사한다.
+    예외는 Lambda Web Adapter가 넘긴 HTTP가 아닌 이벤트(예약 작업) 하나다(routes/events.py)."""
     if not ORIGIN_VERIFY_SECRET_ID:
+        return None
+    from app.routes.events import is_lambda_event
+
+    if is_lambda_event():
         return None
     sent = request.headers.get("X-Origin-Verify", "")
     try:
@@ -105,8 +110,12 @@ def check_origin() -> None:
 
 
 def authenticate() -> None:
-    """before_request 훅. 공개 경로와 CORS 사전 요청(OPTIONS)은 통과시킨다."""
+    """before_request 훅. 공개 경로, CORS 사전 요청(OPTIONS), 예약 작업 이벤트는 통과시킨다."""
     if request.method == "OPTIONS" or request.path.startswith(PUBLIC_PREFIXES):
+        return None
+    from app.routes.events import is_lambda_event
+
+    if is_lambda_event():
         return None
     if auth_disabled():
         g.user = {"sub": DEMO_USER_ID}

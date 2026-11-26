@@ -111,6 +111,29 @@ docker compose -f docker-compose.serverless.yml run --rm flask python scripts/sm
 
 ---
 
+## 2026-11-26 5차 작업: 백엔드 Lambda 하나로 통합
+
+자세한 구조와 근거는 [AWS_DEPLOY.md](AWS_DEPLOY.md) 3장, 6장.
+
+- 문제: Zappa Lambda(일반 API)와 스트리밍 Lambda(SSE)에 같은 Flask 코드를 두 벌 배포했다. API Gateway는 EDGE라 우리 CloudFront 뒤에서 CloudFront를 두 번 지났고, 모델 API 키가 Lambda 환경 변수에 있었다.
+- 바꾼 것
+  - Lambda 하나(`joomini-api`, Lambda Web Adapter 1.1.0, `response_stream`). API Gateway REST는 REGIONAL, `/`와 `/{proxy+}` 모두 STREAM 통합
+  - 예약 작업: Zappa `events`, `keep_warm` 대신 EventBridge Scheduler. Lambda Web Adapter가 이벤트를 `POST /events`로 넘기고 `routes/events.py`가 허용 목록 명령만 실행
+  - 비밀값: Secrets Manager `joomini/app`. Lambda 환경 변수에는 비밀 이름만
+  - IaC: 백엔드 리소스 전부 `infra/backend.yaml` (CloudFormation). Zappa, `deploy_lambda.sh`, `deploy_stream_lambda.sh`, `make_zappa_settings.py` 삭제
+  - 스레드: `run_in_background`는 Lambda에서 항상 요청 안에서 실행, 답변 생성만 `run_alongside_response`(스레드)
+  - 프론트: 답변 요청에서 `/stream` 접두사 제거 (백엔드는 이전 경로도 계속 받음)
+- 로컬 확인 (lambda 이미지를 gunicorn으로 띄우고 DynamoDB Local 연결)
+  - `/events`: `x-amzn-request-context: null`일 때만 실행, 헤더가 없거나 객체면 404, 모르는 명령 400
+  - origin 비밀값을 못 읽는 상태에서 일반 요청은 503, 이벤트만 통과
+  - Lambda 모드(`AWS_LAMBDA_FUNCTION_NAME`)에서 채팅: chunk 스트리밍, done 뒤 제목 저장까지 응답 유지 후 종료
+  - `APP_SECRET_ID`를 읽지 못하면 앱이 뜨지 않음(fail closed)
+  - CloudFormation `validate-template` 통과
+- 확인 못 한 것: 실제 Lambda Web Adapter 안에서의 동작(Lambda 런타임 필요). 배포 후 `/api/health`, 채팅, 예약 작업 로그로 확인한다.
+- 배포 순서(처음 한 번): 배포 역할 정책 갱신(`infra/github-deploy-policy.json`), 로컬에서 `deploy_backend.sh`(CloudFront 오리진 전환 포함), 프론트 배포, 확인 후 `cleanup_legacy_zappa.sh`
+
+---
+
 ## 남은 일 (다음 순서)
 
 | 순서 | 할 일 | 비고 |
@@ -121,6 +144,6 @@ docker compose -f docker-compose.serverless.yml run --rm flask python scripts/sm
 | 4 | 파일 저장을 S3로 | 저장은 완료(4차). 남은 것: 업로드를 presigned URL로 (Lambda 요청 6MB 제한) |
 | 5 | 라우터 모델 결정: torch + mmBERT + e5-large(3GB 이상)는 zip(250MB)에 안 들어감 | 임베딩 API 전환 또는 컨테이너 이미지. 바꾼 뒤 `notebooks/eval`로 재검증 |
 | 6 | 채팅 전송을 비동기 작업 + 폴링으로 (SSE 대체) | 프론트 `lib/api.ts` 수신부만 수정 |
-| 7 | 백그라운드 작업 이전: 제목 생성, 메모리 추출(하루 2회) → Zappa `@task`, `events` | |
+| 7 | ~~백그라운드 작업 이전: 제목 생성, 메모리 추출(하루 2회)~~ | 5차 작업에서 완료 (스트리밍 응답 안에서 제목 생성, EventBridge Scheduler) |
 | 8 | Cognito 로그인, `auth.current_user_id()` 교체 | 라우트 코드는 그대로 |
 | 9 | ~~프론트 배포~~ | 4차 작업에서 완료 (Lambda + Function URL) |

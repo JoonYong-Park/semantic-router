@@ -37,7 +37,7 @@ from app.routing import classifier, complexity
 from app.routing.catalog import DEFAULT_MANUAL_SIZE, get_model
 from app.routing.intent import needs_edit_tools, needs_file_tools, needs_image_tools
 from app.routing.selector import bump_size, select_model
-from app.services.files import run_in_background
+from app.services.files import run_alongside_response
 from app.tools.base import ToolResult
 from app.tools.registry import get_tool_specs, run_tool
 
@@ -110,7 +110,7 @@ def start_turn(uid, cid, body: dict) -> TurnStream:
     turn = TurnStream()
     with active_turns_lock:
         active_turns[cid] = turn
-    run_in_background(_drive, turn, ctx)
+    run_alongside_response(_drive, turn, ctx)
     return turn
 
 
@@ -138,7 +138,7 @@ def _drive(turn: TurnStream, ctx: dict) -> None:
                 title_source = first["content"] if first else title_source
             generate_and_save_title(ctx["uid"], cid, title_source)
     finally:
-        # 응답 스트리밍 Lambda는 이 신호까지 응답(=호출)을 붙잡아 둔다. done 이벤트 직후 호출이
+        # Lambda는 이 신호까지 응답(=호출)을 붙잡아 둔다. done 이벤트 직후 호출이
         # 끝나면 실행 환경이 멈춰 위의 제목 생성이 중간에 끊겼다.
         turn.settle()
 

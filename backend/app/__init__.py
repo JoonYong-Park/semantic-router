@@ -1,4 +1,4 @@
-"""Joomini 백엔드 (Flask, Lambda + Zappa 배포용).
+"""Joomini 백엔드 (Flask). 배포는 Lambda 하나(Lambda Web Adapter + gunicorn, 응답 스트리밍).
 
 기존 FastAPI 백엔드(backend/)를 기능별로 옮겨 오는 중이다. 진행 상황은
 docs/ko/AWS_MIGRATION_LOG.md에 기록한다.
@@ -49,9 +49,9 @@ STREAM_PREFIX = "/stream"
 def _strip_stream_prefix(wsgi_app):
     """/stream/conversations/... 를 /conversations/... 로 받는다.
 
-    배포에서는 API Gateway가 /stream/* 만 응답 스트리밍 Lambda(joomini-stream)로 보내고 나머지는
-    Zappa Lambda로 보낸다. 앱은 어느 쪽에서 돌든 같은 라우트를 쓰도록 접두사를 떼 준다
-    (로컬에서는 같은 서버가 둘 다 받는다)."""
+    예전에는 API Gateway가 /stream/* 만 스트리밍 Lambda로 보냈다. 지금은 Lambda 하나가 모든 경로를
+    응답 스트리밍으로 받으므로 프론트는 접두사를 붙이지 않는다. 배포 직후 브라우저에 남은 이전
+    프론트 번들이 /stream/... 으로 보내도 동작하도록 접두사 떼기는 남겨 둔다."""
 
     def middleware(environ, start_response):
         path = environ.get("PATH_INFO", "")
@@ -64,6 +64,10 @@ def _strip_stream_prefix(wsgi_app):
 
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # 라우트 모듈이 import 시점에 API 키를 읽으므로, 그보다 먼저 Secrets Manager 값을 환경 변수로 넣는다.
+    from app.core import app_secrets
+
+    app_secrets.load()
     app = Flask(__name__)
     app.wsgi_app = _strip_stream_prefix(app.wsgi_app)
     app.json.ensure_ascii = False  # 한글을 \uXXXX가 아니라 그대로 내보낸다
@@ -82,11 +86,11 @@ def create_app() -> Flask:
 
     from app import errors
     from app import auth
-    from app.routes import attachments, conversations, misc, projects, settings, usage, users
+    from app.routes import attachments, conversations, events, misc, projects, settings, usage, users
     from app.routes import auth as auth_routes
 
     errors.register(app)
-    for module in (auth_routes, conversations, attachments, projects, settings, users, usage, misc):
+    for module in (auth_routes, conversations, attachments, projects, settings, users, usage, misc, events):
         app.register_blueprint(module.bp)
 
     # 배포에서는 CloudFront를 거친 요청만 받고(X-Origin-Verify), 그다음 Cognito access 토큰을 검증한다
@@ -127,5 +131,5 @@ def create_app() -> Flask:
     return app
 
 
-# Zappa는 모듈 수준의 WSGI 앱 객체를 가리킨다 (zappa_settings.json의 app_function).
+# gunicorn이 모듈 수준의 WSGI 앱 객체를 띄운다 (app:app).
 app = create_app()

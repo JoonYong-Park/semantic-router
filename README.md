@@ -136,7 +136,7 @@ $C down -v       # also delete volumes (models re-download, DynamoDB data wiped)
 
 ### Deploy (AWS)
 
-Pushing to `main` deploys with GitHub Actions (`.github/workflows/deploy-lambda.yml`): the backend goes to API Gateway + Lambda with Zappa, the frontend to Lambda, both behind one CloudFront distribution (`infra/`). See [docs/ko/AWS_DEPLOY.md](docs/ko/AWS_DEPLOY.md).
+Pushing to `main` deploys with GitHub Actions (`.github/workflows/deploy-lambda.yml`): the backend is one Lambda (Lambda Web Adapter + gunicorn) behind a REGIONAL API Gateway with response streaming, defined in `infra/backend.yaml`; the frontend is a Lambda too, and both sit behind one CloudFront distribution (`infra/`). See [docs/ko/AWS_DEPLOY.md](docs/ko/AWS_DEPLOY.md).
 
 ## License
 

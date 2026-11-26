@@ -1,0 +1,317 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# Joomini 백엔드: API Gateway(REGIONAL) + Lambda 하나 + EventBridge Scheduler.
+#
+# 구조
+#   CloudFront /api/*  ->  API Gateway REST (REGIONAL, 응답 스트리밍)  ->  Lambda joomini-api
+#   Lambda 안: Lambda Web Adapter -> gunicorn -> Flask. 일반 JSON 응답과 SSE(답변 스트리밍)를 같은 함수가 처리한다.
+#   EventBridge Scheduler -> Lambda (비동기 호출). Lambda Web Adapter가 이벤트를 POST /events 로 넘긴다.
+#     - 메모리 자동 추출: 매일 07:00, 12:30 (Asia/Seoul)
+#     - 웜업: 5분마다 (실행 환경 하나를 따뜻하게 유지)
+#
+# 왜 REGIONAL인가
+#   EDGE 타입은 AWS가 관리하는 CloudFront를 하나 더 거친다. 우리 CloudFront 뒤에 두면 CloudFront를 두 번 지난다.
+#   응답 스트리밍 idle 제한도 EDGE 30초, REGIONAL 5분이다.
+#
+# 왜 API Gateway를 두나 (CloudFront -> Lambda Function URL 직접이 아니라)
+#   Function URL을 CloudFront OAC로 보호하면 POST, PUT 요청마다 클라이언트가 본문 SHA256을
+#   x-amz-content-sha256 헤더로 보내야 한다. 채팅, 업로드가 많은 API에는 맞지 않는다.
+#   API Gateway는 요청 제한(throttling)도 맡는다.
+#
+# 비밀값: 모델 API 키와 Cognito client secret은 Secrets Manager(AppSecretId)에 두고 Lambda가 콜드 스타트 때 읽는다
+#   (backend/app/core/app_secrets.py). Lambda 환경 변수에는 비밀 이름만 들어간다.
+#   비밀 값은 backend/scripts/sync_app_secret.py가 넣는다(이 템플릿은 값을 다루지 않는다).
+#
+# 배포: backend/scripts/deploy_backend.sh (이미지 빌드, ECR 업로드, 비밀 동기화, 이 스택 배포)
+
+Description: Joomini backend - REGIONAL REST API (response streaming) + single Lambda (Lambda Web Adapter) + schedules
+
+Parameters:
+  ImageUri:
+    Type: String
+    Description: ECR 이미지 URI (backend/Dockerfile target=lambda)
+  FunctionName:
+    Type: String
+    Default: joomini-api
+  StageName:
+    Type: String
+    Default: prod
+  TableName:
+    Type: String
+    Default: joomini
+  FilesBucket:
+    Type: String
+    Description: 첨부, 생성 파일 버킷 (joomini-files-<계정 ID>)
+  AppSecretId:
+    Type: String
+    Default: joomini/app
+  OriginSecretId:
+    Type: String
+    Default: joomini/origin-verify
+  FrontendOrigin:
+    Type: String
+    Description: 서비스 주소 (https://도메인). 쿠키, CORS, Cognito 콜백 기준
+  CognitoUserPoolId:
+    Type: String
+  CognitoClientId:
+    Type: String
+  CognitoDomain:
+    Type: String
+  CognitoRedirectUri:
+    Type: String
+    Default: ""
+  CognitoLogoutUri:
+    Type: String
+    Default: ""
+  RouterModels:
+    Type: String
+    Default: "off"
+    AllowedValues: ["on", "off"]
+    Description: auto 라우팅 모델(mmBERT, E5) 로드 여부. 콜드 스타트 때문에 기본은 off
+  ThrottleRate:
+    Type: Number
+    Default: 2
+    Description: API Gateway 초당 요청 수 상한 (공개 데모의 LLM 비용 보호)
+  ThrottleBurst:
+    Type: Number
+    Default: 5
+
+Conditions:
+  HasRedirectUri: !Not [!Equals [!Ref CognitoRedirectUri, ""]]
+  HasLogoutUri: !Not [!Equals [!Ref CognitoLogoutUri, ""]]
+
+Resources:
+  # ------------------------------------------------------------------ Lambda
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${FunctionName}-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        # 자기 테이블, 자기 버킷, 자기 비밀만 (최소 권한)
+        - PolicyName: app
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:DescribeTable
+                  - dynamodb:Scan   # 정기 메모리 추출의 사용자 목록 (users.list_user_ids)
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}/index/*
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket]
+                Resource:
+                  - !Sub arn:aws:s3:::${FilesBucket}
+                  - !Sub arn:aws:s3:::${FilesBucket}/*
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AppSecretId}-*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${OriginSecretId}-*
+
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${FunctionName}
+      RetentionInDays: 30
+
+  Function:
+    Type: AWS::Lambda::Function
+    DependsOn: FunctionLogGroup
+    Properties:
+      FunctionName: !Ref FunctionName
+      PackageType: Image
+      Code: {ImageUri: !Ref ImageUri}
+      Architectures: [x86_64]
+      Role: !GetAtt FunctionRole.Arn
+      # 3GB: LibreOffice 변환과 torch import에 메모리가 필요하다
+      MemorySize: 3008
+      # 답변 스트리밍 최대 15분(API Gateway 스트리밍 상한과 같음). 일반 API는 몇 초 안에 끝난다.
+      Timeout: 900
+      EphemeralStorage: {Size: 2048}
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref TableName
+          STORAGE_BUCKET: !Ref FilesBucket
+          FRONTEND_ORIGIN: !Ref FrontendOrigin
+          ROUTER_MODELS: !Ref RouterModels
+          COGNITO_REGION: !Ref AWS::Region
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_CLIENT_ID: !Ref CognitoClientId
+          COGNITO_DOMAIN: !Ref CognitoDomain
+          COGNITO_REDIRECT_URI: !If [HasRedirectUri, !Ref CognitoRedirectUri, !Ref AWS::NoValue]
+          COGNITO_LOGOUT_URI: !If [HasLogoutUri, !Ref CognitoLogoutUri, !Ref AWS::NoValue]
+          COOKIE_SECURE: "1"
+          # CloudFront가 /api/* 를 이 앱으로 넘긴다. 쿠키 Path를 브라우저가 보는 경로에 맞춘다.
+          API_PATH_PREFIX: /api
+          # CloudFront가 붙이는 X-Origin-Verify 헤더를 확인한다 (infra/origin-secret.yaml)
+          ORIGIN_VERIFY_SECRET_ID: !Ref OriginSecretId
+          # 모델 API 키, Cognito client secret (값이 아니라 비밀 이름)
+          APP_SECRET_ID: !Ref AppSecretId
+
+  # ------------------------------------------------------------------ API Gateway (REGIONAL)
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref FunctionName
+      Description: Joomini API (CloudFront /api/* 뒤)
+      EndpointConfiguration: {Types: [REGIONAL]}
+      # 파일 미리보기, 다운로드 같은 바이너리 응답을 그대로 넘긴다
+      BinaryMediaTypes: ["*/*"]
+
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: "{proxy+}"
+
+  # 모든 경로를 Lambda 하나로, 응답 스트리밍(STREAM)으로 보낸다.
+  # 인증은 앱이 한다(X-Origin-Verify 확인 후 Cognito JWT 검증, backend/app/auth.py).
+  RootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !GetAtt Api.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${Function.Arn}/response-streaming-invocations
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 900000
+
+  ProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.path.proxy: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${Function.Arn}/response-streaming-invocations
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 900000
+
+  # 메서드 정의를 바꿨다면 이 리소스의 논리 ID(끝의 버전)를 올려 새 배포를 만들게 한다.
+  # (Lambda 코드만 바뀌는 평소 배포에는 필요 없다. API Gateway는 함수 ARN을 가리킬 뿐이다.)
+  ApiDeploymentV1:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [RootMethod, ProxyMethod]
+    Properties:
+      RestApiId: !Ref Api
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref Api
+      StageName: !Ref StageName
+      DeploymentId: !Ref ApiDeploymentV1
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingRateLimit: !Ref ThrottleRate
+          ThrottlingBurstLimit: !Ref ThrottleBurst
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*
+
+  # ------------------------------------------------------------------ 예약 작업 (EventBridge Scheduler)
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${FunctionName}-scheduler-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: scheduler.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {aws:SourceAccount: !Ref AWS::AccountId}
+      Policies:
+        - PolicyName: invoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt Function.Arn
+
+  # 입력의 command는 routes/events.py의 허용 목록에 있는 이름만 실행된다.
+  MemoryExtractMorning:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub ${FunctionName}-memory-extract-0700
+      Description: 메모리 자동 추출 (매일 07:00 KST)
+      ScheduleExpression: cron(0 7 * * ? *)
+      ScheduleExpressionTimezone: Asia/Seoul
+      FlexibleTimeWindow: {Mode: "OFF"}
+      Target:
+        Arn: !GetAtt Function.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"command": "memory_extract"}'
+        RetryPolicy: {MaximumRetryAttempts: 0}   # 실패해도 다음 실행이 이어서 처리한다
+
+  MemoryExtractNoon:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub ${FunctionName}-memory-extract-1230
+      Description: 메모리 자동 추출 (매일 12:30 KST)
+      ScheduleExpression: cron(30 12 * * ? *)
+      ScheduleExpressionTimezone: Asia/Seoul
+      FlexibleTimeWindow: {Mode: "OFF"}
+      Target:
+        Arn: !GetAtt Function.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"command": "memory_extract"}'
+        RetryPolicy: {MaximumRetryAttempts: 0}
+
+  # 실행 환경 하나를 따뜻하게 둔다(첫 요청 콜드 스타트 완화). 동시 요청까지 보장하려면 Provisioned Concurrency.
+  WarmUp:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub ${FunctionName}-warmup
+      Description: 웜업 (5분마다)
+      ScheduleExpression: rate(5 minutes)
+      FlexibleTimeWindow: {Mode: "OFF"}
+      Target:
+        Arn: !GetAtt Function.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"command": "warm"}'
+        RetryPolicy: {MaximumRetryAttempts: 0}
+
+Outputs:
+  ApiId:
+    Description: CloudFront 스택(infra/cloudfront.yaml)의 ApiId 파라미터
+    Value: !Ref Api
+  ApiStage:
+    Description: CloudFront 스택의 ApiStage 파라미터
+    Value: !Ref StageName
+  FunctionArn:
+    Value: !GetAtt Function.Arn

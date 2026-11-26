@@ -23,6 +23,9 @@ ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 AWS_LWA_PORT=3000
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+# Lambda는 root가 아닌 사용자로 실행한다. 로컬 체크아웃(예: Google Drive 동기화 폴더)은 파일이 600 권한일 수 있어
+# 읽기 권한을 연다. 이게 없으면 Next.js가 public/ 을 읽지 못해(EACCES) 시작하자마자 종료된다.
+RUN chmod -R a+rX /app
 CMD ["node", "server.js"]
 
 # 기본 (로컬)

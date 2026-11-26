@@ -3,7 +3,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 # 한 도메인 아래로 묶는다. 같은 사이트가 되므로 refresh 쿠키(SameSite=Strict)가 정상 동작하고 CORS가 필요 없다.
 #
 # 경로
-#   /api/*          -> API Gateway (/dev). CloudFront Function이 앞의 /api를 떼고 넘긴다 (/api/chat -> /dev/chat)
+#   /api/*          -> API Gateway (/prod, infra/backend.yaml). CloudFront Function이 앞의 /api를 떼고 넘긴다 (/api/chat -> /prod/chat)
 #   /_next/static/* -> 프론트 Lambda, 캐시 (빌드마다 파일 이름이 바뀌어 오래 캐시해도 안전)
 #   그 밖           -> 프론트 Lambda, 캐시 안 함
 #
@@ -31,10 +31,10 @@ Parameters:
     Default: joomini-frontend
   ApiId:
     Type: String
-    Description: Zappa가 만든 REST API ID (joomini-dev)
+    Description: 백엔드 REST API ID (infra/backend.yaml 출력 ApiId)
   ApiStage:
     Type: String
-    Default: dev
+    Default: prod
   DomainName:
     Type: String
     Default: ""
@@ -149,7 +149,7 @@ Resources:
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
-              OriginReadTimeout: 60   # API Gateway 자체 제한(29초)보다 길게
+              OriginReadTimeout: 60   # 응답 조각 사이 최대 대기. SSE는 15초마다 ping을 보낸다
         DefaultCacheBehavior:
           TargetOriginId: frontend
           ViewerProtocolPolicy: redirect-to-https

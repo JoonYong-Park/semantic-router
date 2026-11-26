@@ -1,12 +1,12 @@
-# main에 push하면 백엔드(Zappa) → 프론트 순서로 AWS Lambda에 배포한다.
+# main에 push하면 백엔드(CloudFormation 스택 joomini-backend) 다음 프론트 순서로 AWS Lambda에 배포한다.
 #
 # 자격 증명
 # - AWS: 액세스 키를 저장하지 않는다. GitHub OIDC 토큰으로 joomini-github-deploy 역할을 맡아
 #   1시간짜리 임시 자격 증명을 받는다. 그 역할은 이 저장소의 main 브랜치에서만 맡을 수 있다
 #   (신뢰 정책의 sub = repo:JoonYong-Park@136958650/semantic-router@1346912812:ref:refs/heads/main,
 #   소유자·저장소 ID가 들어가 같은 이름으로 다시 만든 저장소는 맡을 수 없다).
-# - 모델 API 키, Cognito client secret: GitHub Secrets → 배포 단계의 환경 변수 → Lambda 환경 변수.
-#   로그에는 마스킹되고, 이미지와 git에는 들어가지 않는다.
+# - 모델 API 키, Cognito client secret: GitHub Secrets에서 배포 단계의 환경 변수로 받아 Secrets Manager(joomini/app)에
+#   넣는다. Lambda 환경 변수에는 비밀 이름만 있다. 로그에는 마스킹되고, 이미지와 git에는 들어가지 않는다.
 #
 # 저장소 설정 (Settings → Secrets and variables → Actions)
 # - Variables: AWS_DEPLOY_ROLE_ARN, FRONTEND_ORIGIN (CloudFront 주소, infra/cloudfront.yaml)
@@ -20,7 +20,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# 배포가 겹치면 Zappa/CloudFormation 갱신이 꼬인다. 앞 배포가 끝날 때까지 기다린다.
+# 배포가 겹치면 CloudFormation 갱신이 꼬인다. 앞 배포가 끝날 때까지 기다린다.
 concurrency:
   group: deploy-lambda
   cancel-in-progress: false
@@ -56,7 +56,7 @@ jobs:
       - name: Log in to Amazon ECR Public
         run: aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
 
-      - name: Deploy backend (Zappa update)
+      - name: Deploy backend (Lambda + API Gateway, infra/backend.yaml)
         env:
           FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
           COGNITO_REDIRECT_URI: ${{ vars.COGNITO_REDIRECT_URI }}
@@ -70,12 +70,7 @@ jobs:
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           COGNITO_CLIENT_SECRET: ${{ secrets.COGNITO_CLIENT_SECRET }}
-        run: bash backend/scripts/deploy_lambda.sh update
-
-      # 답변 스트리밍(SSE) 전용 Lambda. 같은 백엔드 코드, Lambda Web Adapter로 응답을 흘려보낸다.
-      # 환경 변수는 방금 배포한 Zappa Lambda와 zappa_settings.json에서 가져온다.
-      - name: Deploy streaming Lambda
-        run: bash backend/scripts/deploy_stream_lambda.sh
+        run: bash backend/scripts/deploy_backend.sh
 
       # 프론트는 API를 같은 도메인의 /api(상대 경로)로 부른다. CloudFront가 /api/*를 API Gateway로 넘긴다.
       - name: Deploy frontend
@@ -88,10 +83,9 @@ jobs:
         run: |
           for i in 1 2 3 4 5; do
             api="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/api/health" || true)"
-            stream="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/api/stream/health" || true)"
             web="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/" || true)"
-            echo "api: $api, stream: $stream, web: $web"
-            [ "$api" = "200" ] && [ "$stream" = "200" ] && [ "$web" = "200" ] && exit 0
+            echo "api: $api, web: $web"
+            [ "$api" = "200" ] && [ "$web" = "200" ] && exit 0
             sleep 10
           done
           exit 1

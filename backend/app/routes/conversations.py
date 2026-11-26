@@ -27,10 +27,10 @@ def _sse_response(turn) -> Response:
         try:
             yield from turn.subscribe()
         finally:
-            # 응답 스트리밍 Lambda: 이 응답(=Lambda 호출)이 끝나면 실행 환경이 멈춰 생성 스레드도 멈춘다.
+            # Lambda: 이 응답(=Lambda 호출)이 끝나면 실행 환경이 멈춰 생성 스레드도 멈춘다.
             # 답변 저장과 제목 생성까지 끝날 때까지 호출을 붙잡아 둔다(최대 14분). 브라우저는 done을
             # 이미 받았으므로 기다리는 동안 화면에는 영향이 없다.
-            if files.RESPONSE_STREAMING:
+            if files.ON_LAMBDA:
                 turn.wait_settled(timeout=840)
 
     return Response(

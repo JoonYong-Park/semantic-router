@@ -24,9 +24,6 @@ import {
 import { API_URL, apiFetch, getAccessToken, refreshAccessToken } from "./auth";
 import { GUEST_READONLY_MESSAGE, isGuest } from "./guest";
 
-// 답변 스트리밍(SSE)만 /stream 아래로 보낸다. 배포에서는 API Gateway가 이 경로만 응답 스트리밍
-// Lambda로 넘기고(나머지 API는 Zappa Lambda), 로컬에서는 백엔드가 접두사를 떼고 같은 라우트로 받는다.
-const STREAM_URL = `${API_URL}/stream`;
 
 /**
  * 업로드 진행률(onProgress)이 필요해 XHR을 쓴다(fetch는 업로드 진행률 이벤트가 없다).
@@ -693,7 +690,7 @@ export async function streamMessage(
 ): Promise<void> {
   let res: Response;
   try {
-    res = await apiFetch(`${STREAM_URL}/conversations/${conversationId}/messages`, {
+    res = await apiFetch(`${API_URL}/conversations/${conversationId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -727,7 +724,7 @@ export async function resumeStream(
 ): Promise<boolean> {
   let res: Response;
   try {
-    res = await apiFetch(`${STREAM_URL}/conversations/${conversationId}/stream`, { signal });
+    res = await apiFetch(`${API_URL}/conversations/${conversationId}/stream`, { signal });
   } catch {
     return false;
   }

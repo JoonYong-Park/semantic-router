@@ -5,7 +5,7 @@
 상관없이 끝까지 돌아 답을 저장하고, SSE 응답은 쌓인 이벤트를 처음부터 다시 받거나
 (재접속) 이어서 받기만 한다.
 
-Lambda에서는 응답 스트리밍 Lambda(joomini-stream)가 이 경로를 받는다. 같은 실행 환경에 다시
+Lambda에서는 응답 스트리밍 Lambda(joomini-api)가 이 경로를 받는다. 같은 실행 환경에 다시
 붙어야 이어 받기가 되므로, 다른 실행 환경으로 간 재접속은 저장된 메시지를 다시 읽는 것으로 대신한다.
 
 연결 중에 이벤트가 한동안 없으면(웹 검색, 문서 생성 등) 15초마다 SSE 주석(": ping")을 보낸다.
@@ -27,7 +27,7 @@ class TurnStream:
         self.events: list[dict] = []
         self.done = False
         self._cond = threading.Condition()
-        # done 이후의 뒷정리(제목 생성)까지 끝났는지. 스트리밍 Lambda가 이때까지 호출을 유지한다.
+        # done 이후의 뒷정리(제목 생성)까지 끝났는지. Lambda가 이때까지 호출을 유지한다.
         self._settled = threading.Event()
 
     def emit(self, event: dict) -> None:

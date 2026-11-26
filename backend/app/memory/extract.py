@@ -7,8 +7,8 @@
 - 커서: Conversation.last_extracted_message_id 대신 대화 아이템의 last_extracted_sk
   (메시지 SK가 시간순이라 그 뒤만 Query로 읽는다, AP23).
 - 토픽 details는 JSON 문자열이 아니라 리스트로 저장한다.
-- 실행: asyncio.Lock 대신 threading.Lock. 하루 2회 예약 실행은 Lambda에서 Zappa events로
-  붙인다 (run_scheduled()가 그 진입점). 로컬에서는 수동 트리거(/memory/extract-all)만.
+- 실행: asyncio.Lock 대신 threading.Lock. 하루 2회 예약 실행은 EventBridge Scheduler가
+  Lambda를 호출하고 routes/events.py가 run_scheduled()를 부른다 (infra/backend.yaml). 로컬에서는 수동 트리거(/memory/extract-all)만.
 """
 
 import asyncio
@@ -288,7 +288,7 @@ def extract_all_sequentially(uid, conv_ids: list[str]) -> None:
 
 
 def run_scheduled(event=None, context=None) -> None:
-    """하루 2회(07:00, 12:30 KST) 예약 실행 진입점. Zappa events(EventBridge)에 이 함수를 등록한다.
+    """하루 2회(07:00, 12:30 KST) 예약 실행 진입점. EventBridge Scheduler가 Lambda를 호출하면 routes/events.py가 부른다.
 
     모든 사용자의 대화를 차례로 본다. 대화마다 마지막으로 요약한 지점 이후의 새 메시지만 보내므로
     새 메시지가 없는 대화는 조회 두 번으로 끝난다. Lambda 제한 시간 안에 못 끝내면 남은 사용자는
