@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Joomini</title>
+    <meta name="description" content="질문의 카테고리와 복잡도를 분석해 9개 모델 중 하나로 자동 라우팅하는 AI 채팅" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <!-- 첫 화면이 그려지기 전에 다크 모드 클래스를 정해 깜빡임을 막는다 -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("theme");
+          var dark = stored ? stored === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

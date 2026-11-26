@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# Joomini 프론트 정적 파일 버킷 (React SPA 빌드 결과 dist/).
+#
+# 버킷은 비공개다. CloudFront만 OAC(SigV4 서명)로 읽을 수 있고, 그 버킷 정책은 CloudFront 스택
+# (infra/cloudfront.yaml)에 있다(배포 ARN이 필요해서). 버킷을 따로 둔 이유: 파일을 먼저 올린 뒤
+# CloudFront 오리진을 바꿔야 중간에 빈 버킷을 서빙하는 순간이 없다.
+#
+# 배포: scripts/deploy_frontend.sh (이 스택 확인, 빌드, 업로드)
+
+Description: Joomini frontend - private S3 bucket for the React SPA build
+
+Resources:
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub joomini-web-${AWS::AccountId}
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced   # ACL을 쓰지 않는다
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      LifecycleConfiguration:
+        Rules:
+          # 버전 관리로 덮어쓴 파일(index.html 등)의 예전 버전이 남는다. 30일 뒤 정리한다.
+          # (assets/ 의 해시 이름 파일은 배포 때 지우지 않는다. 열려 있던 탭이 예전 파일을 받을 수 있게)
+          - Id: expire-noncurrent
+            Status: Enabled
+            NoncurrentVersionExpiration: {NoncurrentDays: 30}
+      VersioningConfiguration:
+        Status: Enabled   # 잘못 올린 빌드를 이전 버전으로 되돌릴 수 있다
+
+Outputs:
+  BucketName:
+    Value: !Ref WebBucket
+    Export: {Name: joomini-web-bucket-name}
+  BucketRegionalDomainName:
+    Value: !GetAtt WebBucket.RegionalDomainName
+    Export: {Name: joomini-web-bucket-domain}

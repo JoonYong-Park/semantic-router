@@ -10,7 +10,7 @@
 ## 1. 구조 한눈에 보기
 
 ```
-브라우저 ──HTTPS──▶ CloudFront ─┬─ "/"       ─▶ 프론트 Lambda (Next.js, Function URL, OAC)
+브라우저 ──HTTPS──▶ CloudFront ─┬─ "/"       ─▶ S3 (React SPA 정적 파일, 비공개, OAC)
                                 └─ "/api/*"  ─▶ API Gateway REST (REGIONAL, 응답 스트리밍)
                                                     │
                                                     ▼
@@ -25,15 +25,15 @@ EventBridge Scheduler ──(비동기 호출)──▶ joomini-api  (Lambda Web
 
 | 구성 요소 | 하는 일 |
 |---|---|
-| CloudFront | 한 도메인으로 화면과 API를 묶는다. HTTP는 HTTPS로 넘기고, 정적 파일만 캐시하고, API 요청에 `X-Origin-Verify` 헤더를 붙인다 (`infra/cloudfront.yaml`) |
-| 프론트 Lambda | Next.js 서버. Function URL은 IAM 인증이라 CloudFront OAC 서명 요청만 받는다 |
+| CloudFront | 한 도메인으로 화면과 API를 묶는다. HTTP는 HTTPS로 넘기고, 정적 파일을 캐시하고, 파일이 아닌 경로(`/c/abc`)는 `index.html`로 돌려주고, API 요청에 `X-Origin-Verify` 헤더를 붙인다 (`infra/cloudfront.yaml`) |
+| S3 (프론트) | React SPA 빌드 결과(`index.html`, `assets/`). 비공개 버킷이고 CloudFront OAC 서명 요청만 읽을 수 있다 (`infra/frontend.yaml`) |
 | API Gateway | REGIONAL REST API. 모든 경로(`/`, `/{proxy+}`)를 응답 스트리밍(STREAM) 통합으로 백엔드 Lambda에 넘기고, 요청 제한(초당 2건, 순간 5건)을 건다 |
 | 백엔드 Lambda | Flask 앱 전체. Lambda Web Adapter가 API Gateway 이벤트를 HTTP 요청으로 바꿔 gunicorn에 넘기고 응답을 조각 단위로 흘려보낸다. 일반 JSON과 SSE를 같은 함수가 처리한다 |
 | EventBridge Scheduler | 메모리 자동 추출(매일 07:00, 12:30 KST), 웜업(5분마다) |
 | Secrets Manager | `joomini/app`(모델 API 키, Cognito client secret), `joomini/origin-verify`(CloudFront 비밀 헤더) |
 | DynamoDB | 대화, 메시지, 메모리, 프로젝트, 사용량. 설계는 [DYNAMODB_DESIGN.md](DYNAMODB_DESIGN.md) |
 | S3 | 업로드 원본, 추출 이미지, 미리보기 PDF, 모델이 만든 파일 |
-| ECR | 백엔드, 프론트 컨테이너 이미지 |
+| ECR | 백엔드 컨테이너 이미지 |
 | IAM 실행 역할 | 백엔드는 자기 테이블, 버킷, 비밀에만 접근할 수 있다 |
 | 예산 알림 | 월 $10 기준, 80% 실제 지출과 100% 예상 지출에서 메일 |
 
@@ -45,7 +45,7 @@ main에 push하면 GitHub Actions가 OIDC로 배포 역할을 받아 아래 두 
 
 ```bash
 bash backend/scripts/deploy_backend.sh      # 백엔드
-bash scripts/deploy_frontend_lambda.sh      # 프론트 (API는 같은 도메인의 /api)
+bash scripts/deploy_frontend.sh             # 프론트 (빌드해서 S3에 업로드, API는 같은 도메인의 /api)
 ```
 
 백엔드 스크립트가 하는 일:
@@ -91,10 +91,16 @@ bash scripts/deploy_frontend_lambda.sh      # 프론트 (API는 같은 도메인
 
 **auto 라우팅은 첫 배포에서 끔 (`ROUTER_MODELS=off`)**
 - 라우터 모델(mmBERT + E5, 3GB 이상)을 Lambda가 뜰 때마다 불러오면 수십 초가 걸려 API Gateway 29초 제한에 걸릴 수 있다.
-- 먼저 수동 모델 선택으로 서비스가 확실히 뜨게 하고, 콜드 스타트를 실측한 뒤 켜기로 했다. 프론트 기본 모드도 빌드 옵션(`NEXT_PUBLIC_DEFAULT_MODE`)으로 수동 모드로 바꿨다.
+- 먼저 수동 모델 선택으로 서비스가 확실히 뜨게 하고, 콜드 스타트를 실측한 뒤 켜기로 했다. 프론트 기본 모드도 빌드 옵션(`VITE_DEFAULT_MODE`)으로 수동 모드로 바꿨다.
 
-**프론트도 Lambda**
-- Next.js 서버(SSR)를 띄워야 해서 정적 호스팅(S3)으로는 안 된다. Amplify는 GitHub 연결이 필요해, 같은 컨테이너 방식으로 Lambda Web Adapter를 썼다. 백엔드와 배포 방식이 같아진다.
+**프론트는 React SPA, S3 + CloudFront (2026-11-26)**
+- Joomini는 로그인한 사용자만 쓰는 채팅 앱이다. 화면 내용이 전부 사용자별 대화 데이터라 검색 노출(SEO)이 필요 없고, 오히려 노출되면 안 된다. 그래서 서버에서 HTML을 그리는 SSR이 필요 없다.
+- 처음에는 Next.js 서버를 Lambda(Lambda Web Adapter)에서 돌렸다. 그런데 코드를 보면 SSR, API route, server action, middleware를 하나도 쓰지 않고 모든 페이지가 브라우저에서 그려졌다. 쓰지 않는 서버 기능 때문에 서버를 운영한 셈이다.
+- 그래서 React SPA(Vite 빌드, React Router)로 바꾸고, 빌드한 정적 파일을 비공개 S3에 올려 CloudFront로 서빙한다. 프론트에 서버가 없어서 콜드 스타트, 서버 비용, 런타임 관리가 없다. 로그인한 사용자 데이터가 없는 정적 파일이라 엣지 캐시가 그대로 먹힌다.
+- Next.js 정적 빌드(`output: "export"`)도 검토했지만 `/c/[id]` 같은 동적 경로마다 우회 규칙이 필요하고, 서버 기능을 끈 Next.js는 프레임워크를 쓰는 이유가 약해서 SPA 표준 도구로 바꿨다.
+- SPA 라우팅: S3에는 `index.html` 하나뿐이라 `/c/abc` 파일이 없다. CloudFront Function이 마지막 경로에 확장자가 없는 요청을 `/index.html`로 바꾸고, 브라우저의 React Router가 주소를 읽어 화면을 고른다. CloudFront의 사용자 정의 오류 응답(403/404를 index.html로)은 배포 전체에 걸려 API 오류까지 바꿔 버려서 쓰지 않았다.
+- 캐시: `assets/*`는 파일 이름에 내용 해시가 있어 1년 캐시(immutable), `index.html`은 `no-cache`라 배포 즉시 새 버전을 받는다. 업로드는 assets 먼저, `index.html` 마지막이라 배포 중에도 깨진 화면이 나오지 않는다. 버킷 버전 관리로 이전 빌드로 되돌릴 수 있다.
+- 버킷 스택(`infra/frontend.yaml`)을 CloudFront 스택과 나눈 이유: 파일을 먼저 올린 뒤 오리진을 바꿔야 빈 버킷을 서빙하는 순간이 없다.
 
 **보안과 비용**
 - 백엔드 CORS는 프론트 주소 하나만 허용한다.
@@ -105,7 +111,7 @@ bash scripts/deploy_frontend_lambda.sh      # 프론트 (API는 같은 도메인
 | 항목 | 값 |
 |---|---|
 | 백엔드 콜드 스타트 (Lambda 초기화) | 0.8 ~ 2.6초 (라우터 모델 끔) |
-| 프론트 콜드 스타트 | 0.6 ~ 0.75초 |
+| 프론트 콜드 스타트 | 없음 (S3 정적 파일. Lambda였을 때 0.6 ~ 0.75초) |
 | 따뜻한 상태의 `/health` | 약 0.3 ~ 0.7초 (서울에서 호출) |
 | 백엔드 메모리 / 제한 시간 | 3,008MB / 120초 |
 
@@ -151,9 +157,10 @@ API Gateway의 `execute-api` 주소는 공개라서, CloudFront(보안 헤더, �
 | 2026-11-15 | API Gateway(EDGE, Zappa) + Zappa Lambda. SSE 불가 |
 | 2026-11-25 | 스트리밍 전용 Lambda(`joomini-stream`)를 추가해 `/stream/*`만 응답 스트리밍. 같은 Flask를 두 벌 배포 |
 | 2026-11-26 | Lambda 하나(`joomini-api`, Lambda Web Adapter) + API Gateway REGIONAL(모든 경로 STREAM) + EventBridge Scheduler. Zappa 제거, 비밀값 Secrets Manager로 이동, 전부 `infra/backend.yaml` |
+| 2026-11-26 | 프론트를 Next.js 서버(Lambda)에서 React SPA(Vite)로 바꾸고 S3 + CloudFront(OAC)로 서빙. 프론트 Lambda 삭제 |
 
 이전 리소스(`joomini-dev`, `joomini-stream`, EDGE API, Zappa 규칙)는 새 구조 확인 후 `backend/scripts/cleanup_legacy_zappa.sh`로 지운다.
 
 ## 7. 한 문단 요약
 
-> CloudFront 한 도메인 뒤에 프론트 Lambda와 API Gateway(REGIONAL)를 두고, 백엔드는 Lambda Web Adapter로 Flask를 띄운 Lambda 하나가 일반 API와 SSE 스트리밍을 모두 처리합니다. 처음에는 Zappa가 응답을 모아 돌려줘서 스트리밍용 함수를 따로 두었는데, API Gateway REST의 응답 스트리밍을 모든 경로에 적용해 함수를 하나로 합쳤습니다. API Gateway는 Function URL OAC가 POST 본문 해시를 요구하는 문제와 요청 제한 때문에 유지했고, EDGE를 REGIONAL로 바꿔 CloudFront 이중 경유를 없앴습니다. 예약 작업은 EventBridge Scheduler, 비밀값은 Secrets Manager, 리소스 정의는 CloudFormation 하나로 관리하고, 배포는 GitHub Actions OIDC로 저장된 키 없이 합니다.
+> CloudFront 한 도메인 뒤에 프론트(React SPA, S3)와 API Gateway(REGIONAL)를 두고, 백엔드는 Lambda Web Adapter로 Flask를 띄운 Lambda 하나가 일반 API와 SSE 스트리밍을 모두 처리합니다. 처음에는 Zappa가 응답을 모아 돌려줘서 스트리밍용 함수를 따로 두었는데, API Gateway REST의 응답 스트리밍을 모든 경로에 적용해 함수를 하나로 합쳤습니다. API Gateway는 Function URL OAC가 POST 본문 해시를 요구하는 문제와 요청 제한 때문에 유지했고, EDGE를 REGIONAL로 바꿔 CloudFront 이중 경유를 없앴습니다. 프론트는 로그인 사용자 전용 채팅 앱이라 SEO와 SSR이 필요 없어서 서버 없이 정적 파일로 서빙합니다. 예약 작업은 EventBridge Scheduler, 비밀값은 Secrets Manager, 리소스 정의는 CloudFormation 하나로 관리하고, 배포는 GitHub Actions OIDC로 저장된 키 없이 합니다.

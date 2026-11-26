@@ -132,6 +132,8 @@ docker compose -f docker-compose.serverless.yml run --rm flask python scripts/sm
 - 확인 못 한 것: 실제 Lambda Web Adapter 안에서의 동작(Lambda 런타임 필요). 배포 후 `/api/health`, 채팅, 예약 작업 로그로 확인한다.
 - 배포 순서(처음 한 번): 배포 역할 정책 갱신(`infra/github-deploy-policy.json`), 로컬에서 `deploy_backend.sh`(CloudFront 오리진 전환 포함), 프론트 배포, 확인 후 `cleanup_legacy_zappa.sh`
 
+- 같은 날 이어서: 프론트를 Next.js 서버(Lambda)에서 React SPA(Vite, React Router)로 바꾸고 비공개 S3 + CloudFront(OAC)로 서빙. SSR, API route, server action을 쓰지 않아 서버가 필요 없었다. 동적 경로는 CloudFront Function이 `/index.html`로 돌려준다. 프론트 Lambda와 ECR 저장소 삭제.
+
 ---
 
 ## 남은 일 (다음 순서)

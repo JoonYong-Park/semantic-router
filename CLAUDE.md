@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Joomini: a chat app (Flask + Next.js 14 App Router + DynamoDB, deployed on AWS Lambda behind CloudFront) that routes each question to one of 9 LLMs (OpenAI / Google / Anthropic × small / medium / large). In `auto` mode, an mmBERT classifier picks the **company** from the question's category, and E5-embedding similarity picks the **size** from a complexity score. Manual mode lets the user pick company and size directly. See README.md for the feature list, the memory mechanisms, and per-format attachment handling.
+Joomini: a chat app (Flask + React SPA (Vite, React Router) + DynamoDB, deployed on AWS behind CloudFront) that routes each question to one of 9 LLMs (OpenAI / Google / Anthropic × small / medium / large). In `auto` mode, an mmBERT classifier picks the **company** from the question's category, and E5-embedding similarity picks the **size** from a complexity score. Manual mode lets the user pick company and size directly. See README.md for the feature list, the memory mechanisms, and per-format attachment handling.
 
 ## Commands
 
@@ -19,7 +19,7 @@ docker compose -f docker-compose.dev.yml logs -f backend
 # Quick backend syntax check
 python3 -m py_compile backend/app/<package>/<file>.py
 
-# Frontend typecheck = the `next build` step inside the frontend image build
+# Frontend typecheck = `tsc --noEmit` inside `npm run build` in the frontend image build
 docker compose -f docker-compose.dev.yml up -d --build frontend
 
 # Data layer check against DynamoDB Local (46 checks over every access pattern; cleans up after itself)
@@ -32,7 +32,7 @@ In dev the backend code is bind-mounted and served by the Flask dev server, so e
 
 There is no linter config. Verification is the smoke test, a container build, then hitting endpoints with `curl` (and looking at items in the DynamoDB admin GUI at http://localhost:8002).
 
-Deploys run on every push to `main`: `.github/workflows/deploy-lambda.yml` assumes the `joomini-github-deploy` IAM role through GitHub OIDC (no stored AWS keys; the role trusts only this repo's `main`), runs `backend/scripts/deploy_backend.sh` and then `scripts/deploy_frontend_lambda.sh`. The backend is **one Lambda, `joomini-api`** (Docker target `lambda`: Lambda Web Adapter 1.1.0 + gunicorn, `AWS_LWA_INVOKE_MODE=response_stream`), behind a **REGIONAL** REST API whose `/` and `/{proxy+}` both use STREAM integrations (with LWA in response_stream mode every response uses the streaming format, so a BUFFERED integration would return empty bodies). Every backend resource (Lambda, API, roles, log group, EventBridge Scheduler schedules) is in `infra/backend.yaml` (stack `joomini-backend`); the script builds and pushes the image, syncs secrets, deploys the stack, and (local runs only) points the CloudFront API origin at the stack's API. Model API keys and `COGNITO_CLIENT_SECRET` live in Secrets Manager `joomini/app` (`backend/scripts/sync_app_secret.py` writes it from env/.env; `app/core/app_secrets.load()` reads it at the start of `create_app()`, before route modules read env at import). Non-HTTP invocations (Scheduler: `memory_extract` 07:00/12:30 KST, `warm` every 5 min; manual `aws lambda invoke` with `{"command": ...}`) arrive as `POST /events` (`routes/events.py`, whitelist `COMMANDS`); they are recognized only when LWA's `x-amzn-request-context` header is the literal `null` (LWA overwrites it on every request), and only then skip `check_origin`/`authenticate`. The old `/stream` prefix is still stripped by a WSGI middleware for stale frontends. The deploy role's policy is `infra/github-deploy-policy.json` (applied by hand). Old Zappa resources are removed with `backend/scripts/cleanup_legacy_zappa.sh`. Chat attachments and project files upload straight to S3 (`POST .../upload-url` returns a presigned POST with the key and a 25MB `content-length-range`; the browser posts to S3; `POST .../complete` checks the stored size and registers the file); without `STORAGE_BUCKET` (local) `upload-url` returns `mode: multipart` and `lib/api.ts uploadFile` falls back to the old multipart endpoint. The deploy script sets the files bucket CORS to `FRONTEND_ORIGIN`, and the workflow checks `/api/health` and `/` through CloudFront. Users reach everything at the service domain through one CloudFront distribution (`infra/cloudfront.yaml`, CloudFormation stack `joomini-cloudfront` in ap-northeast-2; the domain is registered in Route 53, the ACM certificate is `infra/certificate.yaml`, stack `joomini-certificate` in us-east-1; `www.` and the `*.cloudfront.net` address 301 to the apex domain because auth cookies and callbacks are tied to one host): `/api/*` goes to API Gateway with the `/api` prefix stripped by a CloudFront Function (`/api/chat` becomes `/prod/chat`), `/_next/static/*` is cached, and everything else goes to the frontend Lambda, whose Function URL is `AWS_IAM` auth reachable only through CloudFront OAC. The frontend is built with `NEXT_PUBLIC_API_URL=/api` (same origin, so no CORS in prod), and the backend gets `API_PATH_PREFIX=/api` so auth cookie paths match what the browser sees (`/api/auth`). Model API keys and `COGNITO_CLIENT_SECRET` come from GitHub Secrets and end up only in Secrets Manager; `AWS_DEPLOY_ROLE_ARN`, `FRONTEND_ORIGIN`, `COGNITO_REDIRECT_URI`, `COGNITO_LOGOUT_URI` are repository variables. The scripts still run locally with the `joomini` AWS profile. How to swap one of the 9 models: docs/en/MODEL_UPDATE.md (Korean: docs/ko/MODEL_UPDATE.md). The AWS move is tracked in docs/ko/AWS_MIGRATION_LOG.md; the current structure and its rationale are in docs/ko/AWS_DEPLOY.md.
+Deploys run on every push to `main`: `.github/workflows/deploy-lambda.yml` assumes the `joomini-github-deploy` IAM role through GitHub OIDC (no stored AWS keys; the role trusts only this repo's `main`), runs `backend/scripts/deploy_backend.sh` and then `scripts/deploy_frontend.sh` (builds the SPA with Docker target `dist` and syncs it to the private bucket `joomini-web-<account>` from `infra/frontend.yaml`, stack `joomini-frontend`: `assets/*` immutable for a year, `index.html` `no-cache`, uploaded last). The backend is **one Lambda, `joomini-api`** (Docker target `lambda`: Lambda Web Adapter 1.1.0 + gunicorn, `AWS_LWA_INVOKE_MODE=response_stream`), behind a **REGIONAL** REST API whose `/` and `/{proxy+}` both use STREAM integrations (with LWA in response_stream mode every response uses the streaming format, so a BUFFERED integration would return empty bodies). Every backend resource (Lambda, API, roles, log group, EventBridge Scheduler schedules) is in `infra/backend.yaml` (stack `joomini-backend`); the script builds and pushes the image, syncs secrets, deploys the stack, and (local runs only) points the CloudFront API origin at the stack's API. Model API keys and `COGNITO_CLIENT_SECRET` live in Secrets Manager `joomini/app` (`backend/scripts/sync_app_secret.py` writes it from env/.env; `app/core/app_secrets.load()` reads it at the start of `create_app()`, before route modules read env at import). Non-HTTP invocations (Scheduler: `memory_extract` 07:00/12:30 KST, `warm` every 5 min; manual `aws lambda invoke` with `{"command": ...}`) arrive as `POST /events` (`routes/events.py`, whitelist `COMMANDS`); they are recognized only when LWA's `x-amzn-request-context` header is the literal `null` (LWA overwrites it on every request), and only then skip `check_origin`/`authenticate`. The old `/stream` prefix is still stripped by a WSGI middleware for stale frontends. The deploy role's policy is `infra/github-deploy-policy.json` (applied by hand). Old Zappa resources are removed with `backend/scripts/cleanup_legacy_zappa.sh`. Chat attachments and project files upload straight to S3 (`POST .../upload-url` returns a presigned POST with the key and a 25MB `content-length-range`; the browser posts to S3; `POST .../complete` checks the stored size and registers the file); without `STORAGE_BUCKET` (local) `upload-url` returns `mode: multipart` and `lib/api.ts uploadFile` falls back to the old multipart endpoint. The deploy script sets the files bucket CORS to `FRONTEND_ORIGIN`, and the workflow checks `/api/health` and `/` through CloudFront. Users reach everything at the service domain through one CloudFront distribution (`infra/cloudfront.yaml`, CloudFormation stack `joomini-cloudfront` in ap-northeast-2; the domain is registered in Route 53, the ACM certificate is `infra/certificate.yaml`, stack `joomini-certificate` in us-east-1; `www.` and the `*.cloudfront.net` address 301 to the apex domain because auth cookies and callbacks are tied to one host): `/api/*` goes to API Gateway with the `/api` prefix stripped by a CloudFront Function (`/api/chat` becomes `/prod/chat`), `/assets/*` is cached, and everything else goes to the S3 bucket through OAC; the `joomini-spa-routing` CloudFront Function (viewer-request on the default behavior) 301s non-canonical hosts and rewrites any path whose last segment has no `.` to `/index.html`, so deep links like `/c/abc` load the SPA. No custom error responses (they would also rewrite API errors). The frontend is built with `VITE_API_URL=/api` (same origin, so no CORS in prod), and the backend gets `API_PATH_PREFIX=/api` so auth cookie paths match what the browser sees (`/api/auth`). Model API keys and `COGNITO_CLIENT_SECRET` come from GitHub Secrets and end up only in Secrets Manager; `AWS_DEPLOY_ROLE_ARN`, `FRONTEND_ORIGIN`, `COGNITO_REDIRECT_URI`, `COGNITO_LOGOUT_URI` are repository variables. The scripts still run locally with the `joomini` AWS profile. How to swap one of the 9 models: docs/en/MODEL_UPDATE.md (Korean: docs/ko/MODEL_UPDATE.md). The AWS move is tracked in docs/ko/AWS_MIGRATION_LOG.md; the current structure and its rationale are in docs/ko/AWS_DEPLOY.md.
 
 ## Data: one DynamoDB table, no migrations
 
@@ -61,15 +61,15 @@ Known shared/coupled points:
 - **`chat/turn.py` (`start_turn` → `_run_turn`) is the single hot path for every feature.** Routing, memory injection, attachment loading, and SSE streaming all converge here. A change scoped to one concern (e.g. "fix memory injection") still runs through shared helpers (e.g. `chat/history.build_history`) on *every* message, so it can silently affect routing or streaming too.
 - **Normal chat and project chat share the same pipeline.** `/c/[id]` and `/projects/[id]` both go through `start_turn`, `build_history`, and the same SSE contract. A fix verified only in a normal chat must also be re-checked in a project chat, and vice versa.
 - **Memory topics are read in two separate places**: `memory/extract.py` (extraction) and `chat/turn.py` + `chat/context.py` (system-prompt injection), both through `db/repo/memory.py`. Changing the topic item shape and updating only one of them leaves the other silently reading stale or malformed data.
-- **The SSE contract (`StreamEvent`) is hand-duplicated** between the backend (`chat/turn.py`) and the frontend (`frontend/lib/types.ts`). Adding, renaming, or removing an event `type` or field on one side without the other breaks the frontend with no compiler error, because the two live in different languages/processes.
-- **`frontend/lib/types.ts` mirrors `backend/app/serializers.py` by hand** for every endpoint, not just SSE — same silent-break risk for any response-shape change. There is no request schema library; routes validate bodies by hand and raise `ApiError(status, detail)` (`{"detail": ...}`, same as FastAPI's shape).
+- **The SSE contract (`StreamEvent`) is hand-duplicated** between the backend (`chat/turn.py`) and the frontend (`frontend/src/lib/types.ts`). Adding, renaming, or removing an event `type` or field on one side without the other breaks the frontend with no compiler error, because the two live in different languages/processes.
+- **`frontend/src/lib/types.ts` mirrors `backend/app/serializers.py` by hand** for every endpoint, not just SSE — same silent-break risk for any response-shape change. There is no request schema library; routes validate bodies by hand and raise `ApiError(status, detail)` (`{"detail": ...}`, same as FastAPI's shape).
 - **Key strings and GSI sort keys are shared state.** Keys are built only in `db/keys.py`. A conversation's `updated_at` must change only through `conversations._touch_update()`, because `GSI1SK`/`GSI2SK` have to move with it or the sidebar order breaks.
 - **`SettingsWindow.tsx` is one tabbed modal** (personal instruction / import / usage / memory / appearance) sharing one piece of modal state. A change to one tab's logic must not alter the open/close or tab-switch behavior of the others.
 
 Before marking any task done:
 1. **Find every other caller/reader** of whatever you changed (`build_history`, `select_model`, the memory repo functions, `StreamEvent`, a serializer, an item attribute, etc.) — grep for it, don't assume it's only used by the feature you're focused on.
 2. **Rebuild and smoke-test beyond the one feature you touched.** At minimum: send one normal chat message and one project chat message end-to-end, and confirm existing memory/attachment behavior still works if your change is anywhere near the chat send path.
-3. **If a schema or the SSE contract changed, confirm both sides were updated together** — `serializers.py` ↔ `frontend/lib/types.ts`, or a repo function's writer ↔ every reader of that attribute — never just one.
+3. **If a schema or the SSE contract changed, confirm both sides were updated together** — `serializers.py` ↔ `frontend/src/lib/types.ts`, or a repo function's writer ↔ every reader of that attribute — never just one.
 4. If you're not sure whether something is shared, say so explicitly instead of assuming isolation — flat module layout with no tests means "it's probably fine" is exactly how regressions ship here.
 
 ## Backend architecture (backend/app/)
@@ -81,7 +81,7 @@ app/
 ├── __init__.py     create_app, CORS, error handler, router-model loading on first request, /health
 ├── auth.py         authenticate() (Cognito JWT, before_request) · current_user_id()
 ├── errors.py       ApiError(status, detail) → {"detail": ...}
-├── serializers.py  response shapes (mirrored by frontend/lib/types.ts)
+├── serializers.py  response shapes (mirrored by frontend/src/lib/types.ts)
 ├── storage.py      file storage by key (local disk under UPLOAD_DIR now; swap for S3)
 ├── db/             dynamo.py (client, update_expr, Decimal conversion) · keys.py · repo/ (one function per access pattern)
 ├── routes/         auth (/auth/login·callback·reissue·logout) · conversations · attachments · projects · settings · users · usage · misc (/search, /memory/extract-all, legacy /chat) · file_views (shared viewers) · events (POST /events, Lambda non-HTTP events)
@@ -145,11 +145,11 @@ Background jobs:
 
 System-prompt context is injected in a fixed precedence order: personal instruction → imported memory → global memory → project instruction → project memory. Tool definitions are not in the system prompt; they go in the provider's top-level `tools` parameter.
 
-**SSE contract:** the backend sends `data: {json}` lines with `type` ∈ `meta | searching | processing | file | chunk | done | error`. Mirror any change in `StreamEvent` in frontend/lib/types.ts. Since the loop, `searching` can arrive after some `chunk`s (when the model writes text before calling a tool).
+**SSE contract:** the backend sends `data: {json}` lines with `type` ∈ `meta | searching | processing | file | chunk | done | error`. Mirror any change in `StreamEvent` in frontend/src/lib/types.ts. Since the loop, `searching` can arrive after some `chunk`s (when the model writes text before calling a tool).
 - `file` carries `{"attachment": attachment_out(...)}` (`serializers.py`) for a generated file. Adding or changing an event means updating three places together:
-  - `StreamEvent` in `frontend/lib/types.ts`;
+  - `StreamEvent` in `frontend/src/lib/types.ts`;
   - the `if/else` parser and the `handlers` type in `lib/api.ts` `streamMessage`, which silently ignores unknown types;
-  - the handler in `app/c/[id]/page.tsx`.
+  - the handler in `src/pages/ChatPage.tsx`.
 - `onFile` also clears `processingMessage`.
 
 **tools/** is the tool layer. A tool is a `ToolSpec` (`tools/base.py`):
@@ -167,7 +167,7 @@ Registered tools: `web_search` (always sent; Tavily → Perplexity → Brave fal
 To add a tool:
 1. Write an async executor that returns a `ToolResult`. Use `ctx.emit` for progress; don't raise for expected failures, return `is_error=True` instead.
 2. Create a `ToolSpec` for it and add it to `_REGISTRY` in `tools/registry.py`.
-3. If it needs a new SSE event type, update `frontend/lib/types.ts` and the `lib/api.ts` parser in the same change.
+3. If it needs a new SSE event type, update `frontend/src/lib/types.ts` and the `lib/api.ts` parser in the same change.
 4. Smoke-test it on all three providers, in a normal chat and in a project chat.
 
 **Web search fallback** (`websearch/providers.py` `search_web`, used by the `web_search` tool):
@@ -374,16 +374,17 @@ To add a tool:
 
 ## Frontend architecture (frontend/)
 
-- **Routes:** `/` is a new chat, `/c/[id]` is a chat room, and `/projects/[id]` is a project page.
-- `components/AppShell.tsx` is the layout. It owns the sidebar and the global `conversations` and `projects` state, and exposes them to route pages through `contexts/AppDataContext.tsx`.
+- **Stack:** React 18 SPA, Vite build, React Router 7 (`createBrowserRouter` in `src/main.tsx`). No server rendering: `npm run build` produces static files in `dist/`. Build-time config is `import.meta.env.VITE_API_URL` / `VITE_DEFAULT_MODE` (`src/vite-env.d.ts`). Locally the `runner` image serves `dist` with nginx (`try_files ... /index.html`, same as the CloudFront function). Code is under `frontend/src/` and `@/` maps to `src/`.
+- **Routes:** `/` is a new chat (`pages/HomePage`), `/c/:id` a chat room (`pages/ChatPage`), `/projects/:id` a project page (`pages/ProjectPage`), `/privacy` the public privacy page; anything else redirects to `/`. Chat and project pages are keyed by `id` so switching between two chats remounts the page (fresh state), like the old Next.js behavior.
+- `components/AppShell.tsx` is the layout (wrapped with `AuthGate` in `RootLayout`, pages come in through `<Outlet />`). It owns the sidebar and the global `conversations` and `projects` state, and exposes them to route pages through `contexts/AppDataContext.tsx`.
 - **First message from `/`:** the page creates the conversation, then hands the unsent message to `/c/{id}` through `lib/pendingMessage.ts` (sessionStorage), because the two routes don't share React state.
-- **Streaming UI** (`app/c/[id]/page.tsx`):
+- **Streaming UI** (`pages/ChatPage.tsx`):
   - An `AbortController` lets the user switch chats mid-stream.
   - `isAutoScrollingRef` distinguishes programmatic scroll from user scroll, so auto-scroll doesn't fight the user.
 - All HTTP calls go through `lib/api.ts`.
 - `lib/types.ts` is kept in sync **by hand** with `backend/app/serializers.py`.
 - Settings is one tabbed window (`components/SettingsWindow.tsx`): personal instruction, import, usage, memory, appearance.
-- Dark mode is class-based (`.dark`). The `.scroll-thin` utility in `globals.css` provides themed scrollbars.
+- Dark mode is class-based (`.dark`). The initial theme is set by an inline script in `index.html` before React loads. The `.scroll-thin` utility in `src/index.css` provides themed scrollbars.
 
 ## Git
 

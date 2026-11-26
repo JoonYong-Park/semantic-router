@@ -5,7 +5,7 @@ An experiment that routes each question to one of **9 models** (OpenAI / Google 
 In the `feat: add phase-1 chat demo with model auto-routing` stage, classification and routing used [vLLM Semantic Router](https://github.com/vllm-project/semantic-router) + Envoy — picking one of three models from a single domain label. We now need a **complexity score** as well (company × size = 9 models). Semantic Router is built for single-category routing, so that second axis did not fit cleanly. We dropped the Envoy path and select the model inside the backend (Flask, formerly FastAPI) with mmBERT (category) + E5 embeddings (complexity), then call each provider API directly.
 
 ```
-browser(:3000)  →  frontend (Next.js)
+browser(:3000)  →  frontend (React SPA, Vite)
                       ↓
                  backend (Flask, :8000)  ←→  DynamoDB (Local :8001 / AWS)
                       ↓
@@ -136,7 +136,7 @@ $C down -v       # also delete volumes (models re-download, DynamoDB data wiped)
 
 ### Deploy (AWS)
 
-Pushing to `main` deploys with GitHub Actions (`.github/workflows/deploy-lambda.yml`): the backend is one Lambda (Lambda Web Adapter + gunicorn) behind a REGIONAL API Gateway with response streaming, defined in `infra/backend.yaml`; the frontend is a Lambda too, and both sit behind one CloudFront distribution (`infra/`). See [docs/ko/AWS_DEPLOY.md](docs/ko/AWS_DEPLOY.md).
+Pushing to `main` deploys with GitHub Actions (`.github/workflows/deploy-lambda.yml`): the backend is one Lambda (Lambda Web Adapter + gunicorn) behind a REGIONAL API Gateway with response streaming, defined in `infra/backend.yaml`; the frontend is a React SPA (Vite) served from a private S3 bucket, and both sit behind one CloudFront distribution (`infra/`). See [docs/ko/AWS_DEPLOY.md](docs/ko/AWS_DEPLOY.md).
 
 ## License
 

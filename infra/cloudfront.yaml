@@ -1,34 +1,30 @@
 AWSTemplateFormatVersion: "2010-09-09"
-# Joomini - CloudFront 단일 도메인. 프론트(Next.js Lambda)와 API(API Gateway + Flask Lambda)를
+# Joomini - CloudFront 단일 도메인. 프론트(React SPA, S3)와 API(API Gateway + Lambda)를
 # 한 도메인 아래로 묶는다. 같은 사이트가 되므로 refresh 쿠키(SameSite=Strict)가 정상 동작하고 CORS가 필요 없다.
 #
 # 경로
-#   /api/*          -> API Gateway (/prod, infra/backend.yaml). CloudFront Function이 앞의 /api를 떼고 넘긴다 (/api/chat -> /prod/chat)
-#   /_next/static/* -> 프론트 Lambda, 캐시 (빌드마다 파일 이름이 바뀌어 오래 캐시해도 안전)
-#   그 밖           -> 프론트 Lambda, 캐시 안 함
+#   /api/*    -> API Gateway (/prod, infra/backend.yaml). CloudFront Function이 앞의 /api를 떼고 넘긴다 (/api/chat -> /prod/chat)
+#   /assets/* -> S3, 오래 캐시 (Vite 빌드 파일 이름에 내용 해시가 붙어 배포마다 이름이 바뀐다)
+#   그 밖     -> S3. 파일이 아닌 경로(/c/abc, /projects/xyz)는 CloudFront Function이 /index.html로 바꾼다.
+#                index.html은 Cache-Control: no-cache로 올려 배포 즉시 새 버전을 받는다.
 #
-# 프론트 Lambda Function URL은 OAC(SigV4 서명)로 CloudFront에서 온 요청만 받는다.
+# S3 버킷(infra/frontend.yaml, 스택 joomini-frontend)은 비공개이고 OAC(SigV4 서명)로 이 배포만 읽는다.
 #
 # 배포 (저장소 루트에서, CloudFront는 전역 서비스지만 스택은 서울 리전에 둔다):
 #   aws cloudformation deploy --profile joomini --region ap-northeast-2 \
 #     --stack-name joomini-cloudfront --template-file infra/cloudfront.yaml \
-#     --parameter-overrides FrontendUrlDomain=<lambda-url 호스트> ApiId=<API Gateway ID> \
+#     --parameter-overrides ApiId=<API Gateway ID> \
 #       DomainName=<도메인> HostedZoneId=<Route 53 호스팅 영역 ID> CertificateArn=<certificate.yaml 출력>
+#   (joomini-frontend 스택이 먼저 있어야 한다. 버킷 이름과 주소를 Export로 가져온다)
 #
 # 내 도메인(DomainName)을 주면: <도메인>, www.<도메인>을 이 배포에 붙이고 Route 53 Alias 레코드를 만든다.
 # www나 *.cloudfront.net 주소로 들어오면 https://<도메인> 으로 301 이동시킨다(로그인 쿠키·콜백이 한 도메인 기준이라).
 # 비우면 CloudFront 기본 주소만 쓴다.
 #
 
-Description: Joomini - CloudFront single domain (frontend Lambda + API Gateway), optional custom domain
+Description: Joomini - CloudFront single domain (S3 SPA + API Gateway), optional custom domain
 
 Parameters:
-  FrontendUrlDomain:
-    Type: String
-    Description: 프론트 Lambda Function URL의 호스트 (https://, 끝의 / 없이)
-  FrontendFunctionName:
-    Type: String
-    Default: joomini-frontend
   ApiId:
     Type: String
     Description: 백엔드 REST API ID (infra/backend.yaml 출력 ApiId)
@@ -57,15 +53,34 @@ Conditions:
   HasOriginVerify: !Equals [!Ref OriginVerify, "true"]
 
 Resources:
-  FrontendOAC:
+  WebOAC:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
-        Name: joomini-frontend-oac
-        Description: CloudFront -> 프론트 Lambda Function URL (SigV4)
-        OriginAccessControlOriginType: lambda
+        Name: joomini-web-oac
+        Description: CloudFront -> 프론트 S3 버킷 (SigV4)
+        OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
+
+  # 이 배포만 버킷 파일을 읽을 수 있다. 목록 조회(ListBucket)는 주지 않아 없는 파일은 403이다.
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !ImportValue joomini-web-bucket-name
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal: {Service: cloudfront.amazonaws.com}
+            Action: s3:GetObject
+            Resource: !Sub
+              - arn:aws:s3:::${Bucket}/*
+              - Bucket: !ImportValue joomini-web-bucket-name
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}
 
   StripApiPrefix:
     Type: AWS::CloudFront::Function
@@ -82,32 +97,41 @@ Resources:
           return request;
         }
 
-  # www.도메인, *.cloudfront.net 으로 온 화면 요청을 대표 도메인으로 보낸다.
-  CanonicalHostRedirect:
+  # 화면 요청(기본 동작)의 viewer-request 함수.
+  # 1) 도메인을 쓰면: www.도메인, *.cloudfront.net 으로 온 요청을 대표 도메인으로 301 (로그인 쿠키, 콜백이 한 도메인 기준)
+  # 2) SPA 라우팅: 마지막 경로에 확장자가 없으면(/c/abc, /projects/xyz, /) /index.html 을 준다.
+  #    그 뒤 브라우저의 React Router가 주소를 읽어 화면을 고른다. /api/* 는 이 함수를 거치지 않는다.
+  SpaRouting:
     Type: AWS::CloudFront::Function
-    Condition: HasDomain
     Properties:
-      Name: joomini-canonical-host
+      Name: joomini-spa-routing
       AutoPublish: true
       FunctionConfig:
-        Comment: 대표 도메인이 아니면 301
+        Comment: 대표 도메인 301 + 확장자 없는 경로는 /index.html
         Runtime: cloudfront-js-2.0
       FunctionCode: !Sub |
+        var CANONICAL = '${DomainName}';
         function handler(event) {
           var request = event.request;
           var host = request.headers.host ? request.headers.host.value : '';
-          if (host === '${DomainName}') return request;
-          var qs = Object.keys(request.querystring).map(function (k) {
-            var q = request.querystring[k];
-            return q.multiValue
-              ? q.multiValue.map(function (v) { return k + '=' + v.value; }).join('&')
-              : k + '=' + q.value;
-          }).join('&');
-          return {
-            statusCode: 301,
-            statusDescription: 'Moved Permanently',
-            headers: { location: { value: 'https://${DomainName}' + request.uri + (qs ? '?' + qs : '') } }
-          };
+          if (CANONICAL && host !== CANONICAL) {
+            var qs = Object.keys(request.querystring).map(function (k) {
+              var q = request.querystring[k];
+              return q.multiValue
+                ? q.multiValue.map(function (v) { return k + '=' + v.value; }).join('&')
+                : k + '=' + q.value;
+            }).join('&');
+            return {
+              statusCode: 301,
+              statusDescription: 'Moved Permanently',
+              headers: { location: { value: 'https://' + CANONICAL + request.uri + (qs ? '?' + qs : '') } }
+            };
+          }
+          var last = request.uri.substring(request.uri.lastIndexOf('/') + 1);
+          if (last.indexOf('.') === -1) {
+            request.uri = '/index.html';
+          }
+          return request;
         }
 
   Distribution:
@@ -130,13 +154,11 @@ Resources:
             MinimumProtocolVersion: TLSv1.2_2021
           - CloudFrontDefaultCertificate: true
         Origins:
-          - Id: frontend
-            DomainName: !Ref FrontendUrlDomain
-            OriginAccessControlId: !GetAtt FrontendOAC.Id
-            CustomOriginConfig:
-              OriginProtocolPolicy: https-only
-              OriginSSLProtocols: [TLSv1.2]
-              OriginReadTimeout: 30
+          - Id: web
+            DomainName: !ImportValue joomini-web-bucket-domain
+            OriginAccessControlId: !GetAtt WebOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""   # OAI가 아니라 OAC를 쓴다
           - Id: api
             DomainName: !Sub ${ApiId}.execute-api.${AWS::Region}.amazonaws.com
             OriginPath: !Sub /${ApiStage}
@@ -150,22 +172,21 @@ Resources:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
               OriginReadTimeout: 60   # 응답 조각 사이 최대 대기. SSE는 15초마다 ping을 보낸다
+        DefaultRootObject: index.html
         DefaultCacheBehavior:
-          TargetOriginId: frontend
+          TargetOriginId: web
           ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods: [GET, HEAD, OPTIONS]
+          AllowedMethods: [GET, HEAD]
           Compress: true
-          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
-          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+          # 오리진의 Cache-Control을 따른다: index.html은 no-cache, 그 밖의 정적 파일은 업로드 때 정한 값
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
           ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
-          FunctionAssociations: !If
-            - HasDomain
-            - - EventType: viewer-request
-                FunctionARN: !GetAtt CanonicalHostRedirect.FunctionMetadata.FunctionARN
-            - !Ref AWS::NoValue
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRouting.FunctionMetadata.FunctionARN
         CacheBehaviors:
-          - PathPattern: /_next/static/*
-            TargetOriginId: frontend
+          - PathPattern: /assets/*
+            TargetOriginId: web
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods: [GET, HEAD]
             Compress: true
@@ -183,26 +204,6 @@ Resources:
             FunctionAssociations:
               - EventType: viewer-request
                 FunctionARN: !GetAtt StripApiPrefix.FunctionMetadata.FunctionARN
-
-  # OAC로 서명된 요청만 프론트 Lambda를 호출할 수 있게, 이 배포만 허용한다.
-  FrontendInvokeUrlPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref FrontendFunctionName
-      Action: lambda:InvokeFunctionUrl
-      Principal: cloudfront.amazonaws.com
-      FunctionUrlAuthType: AWS_IAM
-      SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}
-
-  FrontendInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref FrontendFunctionName
-      Action: lambda:InvokeFunction
-      Principal: cloudfront.amazonaws.com
-      # Function URL 호출은 InvokeFunctionUrl과 InvokeFunction 둘 다 필요하다. 이 조건이 없으면 403.
-      InvokedViaFunctionUrl: true
-      SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}
 
   # 도메인 → CloudFront (Alias, IPv4/IPv6). Z2FDTNDATAQYW2는 CloudFront 고정 호스팅 영역 ID.
   DnsRecords:
